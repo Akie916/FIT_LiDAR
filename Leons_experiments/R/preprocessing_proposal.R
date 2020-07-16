@@ -17,12 +17,12 @@ las_tile <- lidR::readLAS(
 # benefit in doing this (at least with the ground classification).
 #
 # lidR::writeLAS(las_tile,
-#   "../../Data/las_files/PNOA_2016_CANAR-LP_212-3184_ORT-CLA-RGB.las"
+#   "../../Data/las_files/PNOA_2016_CANAR-LP_212-3184_ORT-CLA-RGB.las",
+#   index = TRUE
 # )
 # las_tile <- lidR::readLAScatalog(
 #   "../../Data/las_files/"
 # )
-# Create .lax files with the lasindex command line tool that comes with LAStools
 
 # When I tried to perform a calculation on a LASCatalog object that contained a
 # whole .las file, I was prompted to provide an output file path. After cropping
@@ -40,11 +40,11 @@ las_subtile <- las_clip_relative_rectangle(las_tile, width = 700)
 
 # Remove Noise and Overlap Points (suggested by Akie) ---------------------
 
-las_filtered <- lidR::lasfilter(las_subtile, !(Classification %in% c(7, 12)))
+las_filtered <- lidR::filter_poi(las_subtile, !(Classification %in% c(7, 12)))
 
 # Use lascheck to check for duplicated points
-lidR::lascheck(las_subtile)
-lidR::lascheck(las_filtered)
+lidR::las_check(las_subtile)
+lidR::las_check(las_filtered)
 # -> most of them are gone in the filtered point cloud
 
 # Plot before and after filtering
@@ -126,11 +126,11 @@ density_histograms +
 # densities are distributed homogenously.
 
 # This could be the minimum density homogenization:
-las_homogenized <- lidR::lasfilterdecimate(las_filtered,
+las_homogenized <- lidR::decimate_points(las_filtered,
   lidR::homogenize(density = 0.5, res = 4)
 )
 # This results in point densities that look somewhat normally distributed:
-las_homogenized_to_normal <- lidR::lasfilterdecimate(las_filtered,
+las_homogenized_to_normal <- lidR::decimate_points(las_filtered,
   lidR::homogenize(density = 2.5, res = 6)
 )
 
@@ -200,7 +200,7 @@ density_histograms +
 # both and the CSF algorithm seems to perform better, even though it takes
 # longer to compute. It also looks like this algorithm classifies ground returns
 # better than the original classification.
-own_ground_classification <- lidR::lasground(
+own_ground_classification <- lidR::classify_ground(
   las_subtile,
   algorithm = lidR::csf(sloop_smooth = TRUE)
 )

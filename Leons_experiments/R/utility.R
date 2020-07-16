@@ -4,9 +4,11 @@
 #' allows the user to specify the rectangle relative to the bottom left corner
 #' of the provided las data set.
 las_clip_relative_rectangle <- function(LAS,
-                                        width, height = width,
-                                        x_left = 0, y_bottom = 0) {
-  return(lidR::lasclipRectangle(
+                                        width,
+                                        height = width,
+                                        x_left = 0,
+                                        y_bottom = 0) {
+  return(lidR::clip_rectangle(
     LAS,
     xleft =   LAS@bbox["x", "min"] + x_left,
     ybottom = LAS@bbox["y", "min"] + y_bottom,

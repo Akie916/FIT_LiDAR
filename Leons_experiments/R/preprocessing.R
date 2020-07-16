@@ -42,7 +42,9 @@ raster::hist(dtm_diff,
 # Normalization with DTM --------------------------------------------------
 
 # Normalize the .las file and plot it
-sample_normalized <- lidR::lasnormalize(sample_tile, algorithm = lidR::tin())
+sample_normalized <- lidR::normalize_height(
+  sample_tile, algorithm = lidR::tin()
+)
 plot_las(sample_normalized)
 plot_las(sample_normalized, color = "RGB")
 
@@ -63,25 +65,25 @@ cropped_histogram
 # Segment Individual Trees ------------------------------------------------
 
 test_rectangle <- las_clip_relative_rectangle(sample_tile, width = 500)
-lidR::lascheck(test_rectangle)
+lidR::las_check(test_rectangle)
 plot_las(test_rectangle, color = "RGB")
 
-test_rectangle_normalized <- lidR::lasnormalize(test_rectangle,
+test_rectangle_normalized <- lidR::normalize_height(test_rectangle,
   algorithm = lidR::tin()
 )
-lidR::lascheck(test_rectangle_normalized)
+lidR::las_check(test_rectangle_normalized)
 plot_las(test_rectangle_normalized, color = "RGB")
 
-test_rectangle_wo_ground <- lidR::lasfilter(test_rectangle_normalized,
+test_rectangle_wo_ground <- lidR::filter_poi(test_rectangle_normalized,
   Classification != 2
 )
-lidR::lascheck(test_rectangle_wo_ground)
+lidR::las_check(test_rectangle_wo_ground)
 plot_las(test_rectangle_wo_ground, color = "RGB")
 
-test_rectangle_above_0 <- lidR::lasfilter(test_rectangle_wo_ground,
+test_rectangle_above_0 <- lidR::filter_poi(test_rectangle_wo_ground,
   Z >= 0
 )
-lidR::lascheck(test_rectangle_above_0)
+lidR::las_check(test_rectangle_above_0)
 plot_las(test_rectangle_above_0)
 
 segmented_trees <- crownsegmentr::segment_tree_crowns(
@@ -91,11 +93,15 @@ segmented_trees <- crownsegmentr::segment_tree_crowns(
   return_modes = TRUE
 )
 
-segmented_las <- lidR::lasadddata(test_rectangle_wo_ground,
+segmented_las <- lidR::add_attribute(test_rectangle_wo_ground,
   segmented_trees$crown_id,
   name = "crown_id"
 )
-plot_las(segmented_las, color = "crown_id", colorPalette = random_crown_colors(segmented_trees$crown_id))
+plot_las(
+  segmented_las,
+  color = "crown_id",
+  colorPalette = random_crown_colors(segmented_trees$crown_id)
+)
 
 modes_las <- lidR::LAS(
   segmented_trees[!(is.na(mode_x) | is.na(mode_y) | is.na(mode_z)),
