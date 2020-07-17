@@ -35,7 +35,7 @@ las_tile <- lidR::readLAS(
 
 # I am experimenting on a small subset of the original data because otherwise
 # the computations take too long on my machine.
-las_subtile <- las_clip_relative_rectangle(las_tile, width = 700)
+las_subtile <- lidR_clip_relative_rectangle(las_tile, width = 700)
 
 
 # Remove Noise and Overlap Points (suggested by Akie) ---------------------
@@ -48,8 +48,8 @@ lidR::las_check(las_filtered)
 # -> most of them are gone in the filtered point cloud
 
 # Plot before and after filtering
-plot_las(las_subtile, color = "Classification", legend = TRUE)
-plot_las(las_filtered, color = "Classification", legend = TRUE)
+lidR_plot_custom(las_subtile, color = "Classification", legend = TRUE)
+lidR_plot_custom(las_filtered, color = "Classification", legend = TRUE)
 # -> From just looking at it, removal of these points seems fine.
 
 # Count point classifications
@@ -209,8 +209,8 @@ own_ground_classification <- lidR::classify_ground(
 )
 
 # Plot the "original" classification and the one performed by the algorithm
-plot_las(las_subtile, color = "Classification", legend = TRUE)
-plot_las(own_ground_classification, color = "Classification", legend = TRUE)
+lidR_plot_custom(las_subtile, color = "Classification", legend = TRUE)
+lidR_plot_custom(own_ground_classification, color = "Classification", legend = TRUE)
 
 
 # Homogenize Point Density ------------------------------------------------

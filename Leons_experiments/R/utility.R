@@ -3,7 +3,7 @@
 #' This function differs from \code{\link[lidR]{lasclipRectangle}} in that it
 #' allows the user to specify the rectangle relative to the bottom left corner
 #' of the provided las data set.
-las_clip_relative_rectangle <- function(LAS,
+lidR_clip_relative_rectangle <- function(LAS,
                                         width,
                                         height = width,
                                         x_left = 0,
@@ -23,7 +23,7 @@ las_clip_relative_rectangle <- function(LAS,
 #' \code{\link[lidR]{plot}} function.
 #'
 #' @param ... Arguments passed on to lidR::plot
-plot_las <- function(LAS, axis = TRUE, size = 3, ...) {
+lidR_plot_custom <- function(LAS, axis = TRUE, size = 3, ...) {
   lidR::plot(LAS, axis = axis, size = size, ...)
 }
 

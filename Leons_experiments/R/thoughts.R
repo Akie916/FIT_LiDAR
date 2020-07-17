@@ -14,13 +14,13 @@ lidR::epsg(sample_tile) <- 4083
 # Point density -----------------------------------------------------------
 
 # Plot all points
-plot_las(sample_tile,
+lidR_plot_custom(sample_tile,
   color = "RGB",
   size = 1
 )
 
 # Plot without ground points
-plot_las(lidR::lasfilter(sample_tile, Classification != 2),
+lidR_plot_custom(lidR::lasfilter(sample_tile, Classification != 2),
   color = "RGB",
   size = 1
 )
@@ -28,7 +28,7 @@ plot_las(lidR::lasfilter(sample_tile, Classification != 2),
 ##    there are weird stripes with visibly less ground points.
 
 # Plot all the points again but with smaller point size
-plot_las(sample_tile,
+lidR_plot_custom(sample_tile,
   color = "RGB",
   size = 0.3
 )
@@ -41,7 +41,7 @@ raster::plot(point_density)
 
 # Plot only ground points
 ground_points <- lidR::lasfilter(sample_tile, Classification == 2)
-plot_las(
+lidR_plot_custom(
   ground_points,
   color = "RGB",
   size = 0.3
