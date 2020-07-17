@@ -42,31 +42,47 @@ lidR_plot_custom <- function(LAS, axis = TRUE, size = 3, ...) {
 #' @param crown_ids Numeric Vector. A vector of numeric IDs. The highest ID is
 #'   used to determine the number of returned colors. See the details for more
 #'   information.
-#' @param use_brewer_palette If TRUE, picks random colors from those returned by
-#'   a call to \code{\link[RColorBrewer]{brewer.pal}} with the palette "Paired".
-#'   Otherwise the colors from a coll to \code{\link[grDevices]{hcl.colors}}
-#'   with palette "Berlin" are used.
+#' @param color_palette One of "lidR random", "RColorBrewer Paired", or
+#'   "hcl.colors Berlin". For "lidR random" the function uses the palette
+#'   returned by \code{\link[lidR]{random.colors}}, for "RColorBrewer Paired"
+#'   it's the palette that is returned by a call to
+#'   \code{\link[RColorBrewer]{brewer.pal}} with \code{name = "Paired"} and
+#'   "hcl.colors Berlin" results in colors from a call to \code{hcl.colors(...,
+#'   name = "Berlin")}.
 #' @param invalid_color The color that should be used for "invalid" IDs. The
 #'   format of the color should be the same as colors returned by the
 #'   \code{\link[grDevices]{rgb}} function. The color is prepended to the other
 #'   random colors. See the description for more information on this.
-#'
 random_crown_colors <- function(crown_ids,
-                                use_brewer_palette = TRUE,
+                                color_palette = "lidR random",
                                 invalid_color = rgb(
                                   255, 255, 255, maxColorValue = 255
                                 )) {
+  assertthat::assert_that(
+    toupper(color_palette) %in% toupper(c(
+      "lidR random",
+      "RColorBrewer Paired",
+      "hcl.colors Berlin"
+    )),
+    msg = paste0(
+      '"color_palette has to be one of lidR random", "RColorBrewer Paired", or',
+      ' "hcl.colors Berlin".'
+    )
+  )
+
   highest_crown_id <- max(crown_ids, na.rm = TRUE)
 
-  if (use_brewer_palette) {
-    random_crown_colors <- sample(
+  random_crown_colors <- switch(color_palette,
+    "lidR random" = c(lidR::random.colors(highest_crown_id)),
+    "RColorBrewer Paired" = sample(
       RColorBrewer::brewer.pal(n = 12, name = "Paired"),
       size = highest_crown_id, replace = TRUE
+    ),
+    "hcl.colors Berlin" = sample(
+      hcl.colors(highest_crown_id, palette = "Berlin"),
+      highest_crown_id
     )
-  } else {
-    random_crown_colors <-
-      sample(hcl.colors(highest_crown_id, palette = "Berlin"), highest_crown_id)
-  }
+  )
 
   return(c(invalid_color, random_crown_colors))
 }
