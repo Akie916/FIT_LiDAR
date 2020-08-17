@@ -514,10 +514,10 @@
     },
     "lidR": {
       "Package": "lidR",
-      "Version": "3.0.2",
+      "Version": "3.0.3",
       "Source": "Repository",
       "Repository": "CRAN",
-      "Hash": "2eccd8d34e65de23a71c90c9a1c3fb93"
+      "Hash": "58bceebdcc430f035761d1cc2079c784"
     },
     "lifecycle": {
       "Package": "lifecycle",
