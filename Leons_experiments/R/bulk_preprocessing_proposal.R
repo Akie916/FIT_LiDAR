@@ -597,35 +597,6 @@ sf::write_sf(crown_hulls_with_data,
 rm(convex_crown_hulls, tree_metrics_points)
 
 
-# [Plot the Crown Hulls] --------------------------------------------------
-
-crown_hulls_with_data <- sf::read_sf(
-  glue(output_directory, crown_hulls_with_data_prefix, ".gpkg")
-)
-
-# I am saving this plot to a pdf file because this allows zooming into the plot
-# This takes about a minute on my machine
-pdf("../../Graphics/convex_crowns")
-plot(crown_hulls_with_data["max_z"], axes = TRUE, lwd = .1)
-dev.off()
-
-
-# [Plot the Segmented Point Coud] -----------------------------------------
-
-source("R/utility.R")
-
-segmented_points_with_data <- lidR::readLAS(
-  glue(segmentation_output_directory, segmented_points_with_data_name, ".laz")
-)
-
-lidR_plot_custom(segmented_points_with_data,
-  color = "crown_id",
-  colorPalette = random_crown_colors(
-    segmented_points_with_data@data[, "crown_id"]
-  )
-)
-
-
 # [Bulk Processing with LASTools] -----------------------------------------
 
 # The command line call below demonstrates how LASTools can be used from within
