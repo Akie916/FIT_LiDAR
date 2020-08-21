@@ -54,7 +54,7 @@ lidR_plot_custom(
     segmented_points_with_data,
     convex_area < 500
   )),
-  color = "RGB"#, legend = TRUE
+  color = "convex_area", legend = TRUE
 )
 
 
