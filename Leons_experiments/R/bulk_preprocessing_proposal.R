@@ -18,8 +18,8 @@
 # Note: The LASCatalog procedures used below should run faster when using LAS
 # files instead of LAZ files and even more so when also using LAX files (see
 # vignette("lidR-computation-speed-LAScatalog") for details). I chose to still
-# use LAZ files most of the time because LAS files take up way more disk space
-# and the processing time is still acceptable for me.
+# use LAZ files in most places because LAS files take up way more disk space and
+# the processing time is still acceptable for me.
 
 
 # Setup -------------------------------------------------------------------
@@ -40,8 +40,8 @@ library("dplyr")  # mainly for investigating and removing duplicated crown IDs
 future::plan(strategy = future::multisession)
 
 # Segmentation settings
-cd2th = 0.5  # crown diameter / tree height
-ch2th = 1.0  # crown height / tree height
+cd2th = 0.3  # crown diameter / tree height
+ch2th = 0.5  # crown height / tree height
 
 # Output directories
 output_directory <- "../../Data/output/"
@@ -66,6 +66,7 @@ segmented_points_name <- "segmented_points"
 segmented_points_with_data_name <- "segmented_points_with_data"
 terrain_height_grid_name <- "terrain_height_grid"
 ground_point_density_grid_name <- "ground_point_density_grid"
+land_use_grid_path <- "../../Data/land_use/Akies_LU_grid.tif"
 tree_metrics_points_name <- "tree_metrics_points"
 convex_crown_hulls_prefix <- "convex_crown_hulls"
 crown_hulls_with_data_prefix <- "crown_hulls_with_data"
@@ -77,10 +78,11 @@ output_file_pattern <- "x_{XLEFT}_y_{YBOTTOM}"
 
 raw_data <- lidR::readLAScatalog(
   list.files("../../Data/input_laz_files/",
-     pattern = "*CIR\\.laz",
-     full.names = TRUE
+    pattern = "*CIR\\.laz",
+    full.names = TRUE
   ),
-  filter = "-drop_class 7"
+  filter = "-drop_class 7",
+  chunk_size = 1000
 )
 
 # The filter_duplicates procedure requires the creation of output files
@@ -170,43 +172,11 @@ lidR::opt_output_files(edge_clipped_points) <- glue(
 )
 lidR::opt_laz_compression(edge_clipped_points) <- TRUE
 
+set.seed(1234)
 # This takes less than 5 minutes on my machine
 homogenized_points <- lidR::decimate_points(edge_clipped_points,
   algorithm = lidR::homogenize(density = 0.5, res = 2)
 )
-
-
-# Segment Individual Trees ------------------------------------------------
-
-homogenized_points <- lidR::readLAS(
-  list.files(catalog_output_directory,
-    pattern = glue("{homogenized_points_prefix}_.*\\.laz"),
-    full.names = TRUE
-  )
-)
-
-# This takes somewhere between 5 to 10 minutes on my machine
-segmented_points <- crownsegmentr::segment_tree_crowns(
-  point_cloud = homogenized_points@data,
-  crown_diameter_2_tree_height = cd2th,
-  crown_height_2_tree_height = ch2th
-)
-
-# Add the crown IDs to the LAS data
-segmented_points <- lidR::add_lasattribute(homogenized_points,
-  segmented_points[["crown_id"]],
-  name = "crown_id",
-  desc = "Tree Crown ID"
-)
-
-# Remove any unsegmented points
-segmented_points <- lidR::filter_poi(segmented_points, crown_id > 0)
-
-lidR::writeLAS(segmented_points,
-  file = glue("{segmentation_output_directory}{segmented_points_name}.laz")
-)
-
-rm(homogenized_points, segmented_points)
 
 
 # Calculate Terrain Data --------------------------------------------------
@@ -245,6 +215,39 @@ raster::writeRaster(ground_point_density,
 )
 
 
+# Segment Individual Trees ------------------------------------------------
+
+homogenized_points <- lidR::readLAS(
+  list.files(catalog_output_directory,
+    pattern = glue("{homogenized_points_prefix}_.*\\.laz"),
+    full.names = TRUE
+  )
+)
+
+# This takes somewhere between 5 to 10 minutes on my machine
+segmented_points <- crownsegmentr::segment_tree_crowns(
+  point_cloud = homogenized_points@data,
+  crown_diameter_2_tree_height = cd2th,
+  crown_height_2_tree_height = ch2th
+)
+
+# Add the crown IDs to the LAS data
+segmented_points <- lidR::add_lasattribute(homogenized_points,
+  segmented_points[["crown_id"]],
+  name = "crown_id",
+  desc = "Tree Crown ID"
+)
+
+# Remove any unsegmented points
+segmented_points <- lidR::filter_poi(segmented_points, crown_id > 0)
+
+lidR::writeLAS(segmented_points,
+  file = glue("{segmentation_output_directory}{segmented_points_name}.laz")
+)
+
+rm(homogenized_points, segmented_points)
+
+
 # Get Terrain Data at Segmented Points (by Akie) --------------------------
 
 segmented_points <- lidR::readLAS(
@@ -256,6 +259,7 @@ terrain_height_grid <- raster::raster(
 ground_point_density <- raster::raster(
   glue("{catalog_output_directory}{ground_point_density_grid_name}")
 )
+land_use_grid <- raster::raster(land_use_grid_path)
 
 # Calculate the terrain height of each crown point with the Zref attribute that
 # was created by the lidR::normalize_height function
@@ -278,13 +282,8 @@ slope_and_aspect_grid <- raster::terrain(terrain_height_grid_res_2,
 segmented_points <- lidR::merge_spatial(segmented_points,
   source = slope_and_aspect_grid[["slope"]],
   attribute = "slope"
-)
-# When using this function instead of lidR::add_attribute, the attribute is
-# retained when a LAS file is written
-segmented_points <- lidR::add_lasattribute(segmented_points,
-  name = "slope",
-  desc = "slope"
-)
+) %>%
+  lidR::add_lasattribute(name = "slope", desc = "slope")
 # TODO Suggest lidR maintainer to add a add_lasattribute parameter to
 # merge_spatial like in normalize_height
 
@@ -292,20 +291,23 @@ segmented_points <- lidR::add_lasattribute(segmented_points,
 segmented_points <- lidR::merge_spatial(segmented_points,
   source = slope_and_aspect_grid[["aspect"]],
   attribute = "aspect"
-)
-segmented_points <- lidR::add_lasattribute(segmented_points,
-  name = "aspect",
-  desc = "aspect"
-)
+) %>%
+  lidR::add_lasattribute(name = "aspect", desc = "aspect")
 
 segmented_points <- lidR::merge_spatial(segmented_points,
   source = ground_point_density,
   attribute = "ground_point_density"
-)
-segmented_points <- lidR::add_lasattribute(segmented_points,
-  name = "ground_point_density",
-  desc = "ground point density"
-)
+) %>%
+  lidR::add_lasattribute(
+    name = "ground_point_density",
+    desc = "ground point density"
+  )
+
+segmented_points <- lidR::merge_spatial(segmented_points,
+  source = land_use_grid,
+  attribute = "land_use"
+) %>%
+  lidR::add_lasattribute(name = "land_use", desc = "land use")
 
 lidR::writeLAS(segmented_points,
   glue("{segmentation_output_directory}{segmented_points_with_data_name}.las"),
@@ -344,7 +346,8 @@ calculate_tree_metrics <- function(x, y, z,
                                    terrain_height,
                                    slope,
                                    aspect,
-                                   ground_point_density) {
+                                   ground_point_density,
+                                   land_use) {
 
   max_z_index <- which.max(z)
 
@@ -362,6 +365,17 @@ calculate_tree_metrics <- function(x, y, z,
     y_at_max_z = y[max_z_index],
 
     num_points = length(x),
+
+    land_use_at_max_z = land_use[max_z_index],
+    # This is cooler but takes too long to be worth the wait
+    # land_use = dplyr::if_else(
+    #   condition = dplyr::n_distinct(land_use) == 1,
+    #   true = land_use[1],
+    #   false = as.numeric(sample(
+    #       dplyr::slice_max(dplyr::as_tibble(table(land_use)), n)[["land_use"]],
+    #       size = 1
+    #   ))
+    # ),
 
     terrain_height_at_max_z = terrain_height[max_z_index],
     terrain_height_max = max(terrain_height),
@@ -393,9 +407,10 @@ calculate_tree_metrics <- function(x, y, z,
   ))
 }
 
+set.seed(1234)
 tree_metrics_points <- lidR::tree_metrics(segmented_points_with_data,
   func = ~calculate_tree_metrics(
-    X, Y, Z, terrain_height, slope, aspect, ground_point_density
+    X, Y, Z, terrain_height, slope, aspect, ground_point_density, land_use
   ),
   attribute = "crown_id"
 )
@@ -449,14 +464,25 @@ convex_crown_hulls <- dplyr::bind_rows(lapply(
   sf::read_sf
 ))
 
-# Calculate the crown area
-convex_crown_hulls <- convex_crown_hulls %>%
-  mutate(convex_area = sf::st_area(.))
-
-# Write the output file
-sf::write_sf(convex_crown_hulls,
-  glue(segmentation_output_directory, convex_crown_hulls_prefix, ".gpkg")
+# Calculate max diameters
+# This took about two minutes on my machine
+convex_crown_hull_diameter_max <- sapply(convex_crown_hulls[["geom"]],
+  function(convex_polygon) {
+    max(dist(sf::st_coordinates(convex_polygon)[, c("X", "Y")]))
+  }
 )
+
+# Calculate the crown area and mean diameter and write the data to disk
+convex_crown_hulls %>%
+  mutate(
+    diameter_convex_max = convex_crown_hull_diameter_max,
+    convex_area = sf::st_area(geom),
+    diameter_mean =
+      sf::st_cast(geom, to = "LINESTRING") %>% sf::st_length() / pi
+  ) %>%
+  sf::write_sf(
+    glue(segmentation_output_directory, convex_crown_hulls_prefix, ".gpkg")
+  )
 
 # Remove the partial files
 file.remove(
@@ -543,11 +569,9 @@ file.remove(
 segmented_points <- lidR::readLAS(
   glue(segmentation_output_directory, segmented_points_name, ".laz")
 )
-
 tree_metrics_points <- sf::read_sf(
   glue(segmentation_output_directory, tree_metrics_points_name, ".gpkg")
 )
-
 convex_crown_hulls <- sf::read_sf(
   glue(segmentation_output_directory, convex_crown_hulls_prefix, ".gpkg")
 )
@@ -575,31 +599,26 @@ length(unique_segmentation_ids) == length(unique_crown_hull_ids)
 #> TRUE
 
 # If they do, check whether they contain the same IDs
-all(sort(unique_segmentation_ids) == sort(unique_tree_metrics_ids))
+isTRUE(all.equal(sort(unique_segmentation_ids), sort(unique_tree_metrics_ids)))
 #> TRUE
-all(sort(unique_segmentation_ids) == sort(unique_crown_hull_ids))
+isTRUE(all.equal(sort(unique_segmentation_ids), sort(unique_crown_hull_ids)))
 #> TRUE
 
 # -> Both the tree metrics and the crown hulls feature all of the IDs that
 #    appear in the segmented points but since they have more rows than unique
 #    IDs, some IDs have to have been duplicated
 
+
 ## First deal with the tree metrics data
-# Identify the duplicated IDs
-duplicated_tree_metrics_ids <- tree_metrics_points %>%
-  as_tibble() %>%
-  select(crown_id) %>%
-  filter(duplicated(crown_id)) %>%
-  pull()
 
 # Have a look at all rows with duplicated IDs
 tree_metrics_points %>%
-  filter(crown_id %in% duplicated_tree_metrics_ids) %>%
+  filter(crown_id %in% crown_id[duplicated(crown_id)]) %>%
   arrange(crown_id)
 
 # Check whether the duplicated rows are identical
 tree_metrics_points %>%
-  filter(crown_id %in% duplicated_tree_metrics_ids) %>%
+  filter(crown_id %in% crown_id[duplicated(crown_id)]) %>%
   unique() %>%
   arrange(crown_id)
 # unique() just "tests for identity of character representations" (according to
@@ -609,21 +628,22 @@ tree_metrics_points %>%
 # -> They are all located at the border of a chunk
 
 # Remove the duplicated rows in the tree metrics data
-tree_metrics_points <- tree_metrics_points %>%
-  filter(!duplicated(crown_id))
+tree_metrics_points <- tree_metrics_points %>% filter(!duplicated(crown_id))
+
 
 ## Now for the crown hull data
-# Identify duplicated IDs
-duplicated_crown_hull_ids <- convex_crown_hulls %>%
-  as_tibble() %>%
-  select(crown_id) %>%
-  filter(duplicated(crown_id)) %>%
-  pull()
 
 # Have a look at all rows with duplicated IDs
 convex_crown_hulls %>%
-  filter(crown_id %in% duplicated_crown_hull_ids) %>%
+  filter(crown_id %in% crown_id[duplicated(crown_id)]) %>%
   arrange(crown_id)
+
+# Check whether the duplicated rows are identical
+convex_crown_hulls %>%
+  filter(crown_id %in% crown_id[duplicated(crown_id)]) %>%
+  unique() %>%
+  arrange(crown_id)
+# -> they are
 
 # -> It's similar to the tree metrics in that every ID appears exactly twice and
 #    the tree top coordinate is located at a chunk edge
@@ -635,18 +655,10 @@ convex_crown_hulls %>%
 #    Also, when the tree metrics are also calculated with 1000m chunks they
 #    feature the same duplicated crowns as the crown hull data.
 #    TODO test if this is a reproducible bug and if yes, create an issue on the
-#    lidR GitHub
-
-# Check whether the duplicated rows are identical
-convex_crown_hulls %>%
-  filter(crown_id %in% duplicated_crown_hull_ids) %>%
-  unique() %>%
-  arrange(crown_id)
-# -> they are
+#    lidR GitHub. More evidence for a bug: This happened for my MT data as well.
 
 # Remove duplicated rows
-convex_crown_hulls <- convex_crown_hulls %>%
-  filter(!duplicated(crown_id))
+convex_crown_hulls <- convex_crown_hulls %>% filter(!duplicated(crown_id))
 
 rm(segmented_points)
 
@@ -661,26 +673,25 @@ sf::write_sf(convex_crown_hulls,
 
 # Merge Crown Hulls with Tree Metrics -------------------------------------
 
-convex_crown_hulls <- sf::read_sf(
-  glue(segmentation_output_directory, convex_crown_hulls_prefix, ".gpkg")
-)
+# convex_crown_hulls <- sf::read_sf(
+#   glue(segmentation_output_directory, convex_crown_hulls_prefix, ".gpkg")
+# )
+#
+# tree_metrics_points <- sf::read_sf(
+#   glue(segmentation_output_directory, tree_metrics_points_name, ".gpkg")
+# )
 
-tree_metrics_points <- sf::read_sf(
-  glue(segmentation_output_directory, tree_metrics_points_name, ".gpkg")
-)
-
-crown_hulls_with_data <- convex_crown_hulls %>%
-  select(crown_id, convex_area) %>%
+convex_crown_hulls %>%
+  select(-(XTOP:ZTOP)) %>%
   left_join(
     tree_metrics_points %>% as_tibble() %>% select(-geom),
     by = "crown_id"
+  ) %>%
+  sf::write_sf(
+    glue(segmentation_output_directory, crown_hulls_with_data_prefix, ".gpkg")
   )
 
-sf::write_sf(crown_hulls_with_data,
-  glue(segmentation_output_directory, crown_hulls_with_data_prefix, ".gpkg")
-)
-
-rm(convex_crown_hulls, crown_hulls_with_data, tree_metrics_points)
+rm(convex_crown_hulls, tree_metrics_points)
 
 
 # [Bulk Processing with LASTools] -----------------------------------------
