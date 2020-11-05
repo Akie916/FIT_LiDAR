@@ -3,6 +3,41 @@ library(tidyverse)
 future::plan(strategy = future::multisession)
 
 
+# Explore the original LAS data -------------------------------------------
+
+file_paths <- list.files("../../Data/output/catalog_processing",
+  pattern = "without_noise_and_duplicates_.*\\.laz",
+  full.names = TRUE
+)
+
+las_data <- lidR::readLAScatalog(file_paths)
+
+lidR::summary(las_data)
+lidR::las_check(las_data)
+
+las_file <- lidR::readLAS(file_paths[[1]])
+
+lidR::summary(las_file)
+lidR::las_check(las_file)
+
+las_header <- lidR::readLASheader(file_paths[[1]])
+
+cat(
+  las_file@header@PHB$`Number of points by return`[[1]],
+  data.table::uniqueN(las_file@data$gpstime),
+  table(las_file@data$ReturnNumber)[[1]],
+  las_header@PHB$`Number of points by return`[[1]],
+  sep = "\n"
+)
+las_header@PHB$`Number of points by return`[[1]] -
+  data.table::uniqueN(las_file@data$gpstime)
+
+las_headers <- list()
+for (i in seq_along(file_paths)) {
+  las_headers[[i]] <- lidR::readLASheader(file_paths[[i]])
+}
+
+
 # Look at Point Classification --------------------------------------------
 
 las_data <- lidR::readLAS(
@@ -45,15 +80,19 @@ lidR::plot(las_data,
 # Create Point Density Rasters for Exploration in QGIS --------------------
 
 las_data <- lidR::readLAScatalog(
+  # list.files("../../Data/output/catalog_processing",
+  #   pattern = "without_noise_and_duplicates_.*\\.laz",
+  #   full.names = TRUE
+  # ),
   list.files("../../Data/output/catalog_processing",
-    pattern = "without_noise_and_duplicates_.*\\.laz",
+    pattern = "homogenized_points_.*\\.laz",
     full.names = TRUE
   ),
   # list.files("../../Data/input_laz_files/",
   #   pattern = "*CIR\\.laz",
   #   full.names = TRUE
   # ),
-  filter = "-drop_class 12",
+  filter = "-first_only",
   # chunk_size = 1000
 )
 
@@ -65,7 +104,34 @@ point_density[is.na(point_density)] <- 0
 raster::writeRaster(point_density,
   filename = paste0(
     "../../Data/output/exploration/",
-    "no_overlap_wo_noise_n_dupes_point_density_res_5"
+    "first_only_homogenized_dens075_sqrt4_point_density_res_5"
+  ),
+  overwrite = TRUE
+)
+
+
+# Investigate the Homogenization Results ----------------------------------
+
+homogenized_points <- lidR::readLAScatalog(
+  list.files("../../Data/output/catalog_processing",
+    pattern = "homogenized_points_.*\\.laz",
+    full.names = TRUE
+  )
+)
+
+ideal_n_points <- lidR::area(homogenized_points) * 0.5
+lost_points_percentage <-
+  100 - lidR::npoints(homogenized_points) / ideal_n_points * 100
+
+# This usually takes at least a few minutes depending on the input data
+point_density <- lidR::grid_density(homogenized_points, res = 2)
+
+point_density[is.na(point_density)] <- 0
+
+raster::writeRaster(point_density,
+  filename = paste0(
+    "../../Data/output/exploration/",
+    "homogenized_at_res_2_wo_noise_n_dupes_point_density_res_2"
   ),
   overwrite = TRUE
 )
@@ -121,6 +187,30 @@ canopy_height_grid <- lidR::grid_canopy(normalized_points,
   res = 0.5,
   algorithm = lidR::p2r(na.fill = lidR::tin())
 )
+
+canopy_height_grid <- raster::raster(
+  "../../Data/output/exploration/vegetation_height_wo_noise_n_dupes_res_1.grd"
+)
+
+elevation_matrix <- rayshader::raster_to_matrix(canopy_height_grid)
+
+canopy_hillshade <- elevation_matrix %>%
+  rayshader::sphere_shade(.) %>%
+  rayshader::add_shadow(.,
+    shadowmap = rayshader::ray_shade(elevation_matrix),
+    max_darken = 0.5
+  )
+
+raster::brick(canopy_hillshade,
+  xmn = raster::xmin(canopy_height_grid),
+  xmx = raster::xmax(canopy_height_grid),
+  ymn = raster::ymin(canopy_height_grid),
+  ymx = raster::ymax(canopy_height_grid),
+  crs = raster::crs(canopy_height_grid)
+) %>%
+  raster::writeRaster(
+    "../../Data/output/exploration/canopy_height_raytraced_res_1.tif"
+  )
 
 
 # Comparing Slope on Coarser and Finer Scales -----------------------------
@@ -187,45 +277,139 @@ ggplot(slope_values) +
 # -> The difference between the resolutions is very small
 
 
-# Plot Table Data ---------------------------------------------------------
-
-trees <- sf::read_sf("../../Data/output/crown_hulls_with_data.gpkg")
-
-ggplot(trees) +
-  geom_point(aes(x = convex_area, y = max_z), size = 0.25)
-
-ggplot(trees) +
-  geom_point(aes(x = terrain_height_max - terrain_height_min, y = max_z))
-
-ggplot(trees) +
-  geom_point(aes(x = slope_mean, y = max_z), size = 0.25)
-
-ggplot(trees) +
-  geom_hex(aes(x = slope_mean, y = max_z))
-
-ggplot(trees) +
-  geom_point(aes(x = slope_mean, y = convex_area), size = 0.25)
-
-ggplot(trees %>% filter(convex_area < 100)) +
-  geom_point(
-    aes(x = slope_mean, y = convex_area, color = num_points),
-    size = 0.25
-  )
-
-ggplot(trees) +
-  geom_point(
-    aes(x = terrain_height_mean, y = convex_area, color = num_points),
-    size = 0.25
-  )
-
-
 # Plot Point Data ---------------------------------------------------------
 
 source("R/utility.R")
 
+segmentation_output_directory <-
+  "../../Data/output/segmentation/cd2th_0_4_ch2th_0_75/"
+
 segmented_points <- lidR::readLAS(
-  "../../Data/output/segmentation/segmented_points_cd2th_0_3_ch2th_1.laz"
+  paste0(segmentation_output_directory, "segmented_points.laz")
 )
+crown_hulls <- sf::read_sf(
+  paste0(segmentation_output_directory, "crown_hulls_with_data.gpkg")
+)
+
+point_cloud_with_data <- crown_hulls %>%
+  sf::st_drop_geometry() %>%
+  data.table::as.data.table() %>%
+  .[segmented_points@data, on = "crown_id"] %>%
+  mutate(diameter_convex_mean_log = log(diameter_convex_mean))
+
+for (attribute_name in c("diameter_convex_mean")) {
+  segmented_points <- lidR::add_lasattribute(segmented_points,
+    point_cloud_with_data[[attribute_name]],
+    name = attribute_name,
+    desc = attribute_name
+  )
+}
+
+system.file("extdata", "Topography.laz", package = "lidR") %>%
+  lidR::readLAS(.) %>%
+  lidR::normalize_height(., lidR::tin(), add_lasattribute = FALSE) %>%
+  lidR::unnormalize_height(.) %>%
+  lidR::writeLAS(., paste0(tempfile(), ".laz"))
+
+lidR::writeLAS(
+  segmented_points,
+  "../../Data/output/exploration/segmented_points_with_data_cd2th_0_4_ch2th_0_75.laz"
+)
+
+segmented_points %>%
+  lidR_clip_relative_rectangle(width = 6000, height = 6000, x_left = 2000) %>%
+  lidR::unnormalize_height() %>%
+  lidR::plot(color = "diameter_convex_mean", axis = TRUE, legend = TRUE)
+
+terrain_height_grid <- raster::raster(
+  "../../Data/output/catalog_processing/terrain_height_grid.grd"
+) %>% raster::aggregate(fact = 60)
+
+slope_grid <- raster::terrain(terrain_height_grid,
+  opt = "slope",
+  unit = "degrees",
+  neighbors = 8
+)
+
+# Note that some trees will be counted multiple times by this approach
+tree_density_grid <- lidR::grid_metrics(segmented_points,
+  ~ list(tree_density = length(unique(crown_id))),
+  res = slope_grid
+)
+
+# Note this isn't ideal either
+land_use_grid <- raster::raster("../../Data/land_use/Akies_LU_grid.tif") %>%
+  raster::aggregate(fact = 30, function(x, na.rm) sample(x, size = 1))
+
+grid_stack <- raster::stack(list(
+  tree_density = tree_density_grid,
+  slope = slope_grid,
+  land_use = land_use_grid
+))
+
+trees_vs_slope_density <- tibble(
+  tree_density = raster::values(grid_stack$tree_density),
+  slope = raster::values(grid_stack$slope),
+  land_use = factor(raster::values(grid_stack$land_use))
+) %>%
+  # filter(!is.nan(slope)) %>%
+  mutate(tree_density = ifelse(is.na(tree_density), 0, tree_density)) %>%
+  mutate(slope_interval = cut_width(slope,
+    width = 5,
+    boundary = 0,
+    closed = "left"
+    )
+  ) %>%
+  group_by(land_use, slope_interval) %>%
+  summarise(n_pixels = n(), n_trees = sum(tree_density)) %>%
+  mutate(
+    relative_tree_density = n_trees / n_pixels,
+    slope_interval_val = as.integer(slope_interval)
+  )
+
+ggplot(trees_vs_slope_density) +
+  geom_line(
+    aes(x = slope_interval_val, y = relative_tree_density, color = land_use)
+  ) +
+  scale_x_continuous(
+    breaks = unique(trees_vs_slope_density$slope_interval_val),
+    labels = unique(trees_vs_slope_density$slope_interval)
+  )
+
+
+# A failed attempt to create a rayshader plot with a picture mapped on top of
+# the 3D model.
+
+# crown_diameter_grid <- segmented_points %>%
+#   lidR::grid_metrics(
+#     ~ list(crown_diameter =  max(diameter_convex_mean)),
+#     res = 5
+#   )
+#
+# terrain_height_grid <- raster::raster(
+#   "../../Data/output/catalog_processing/terrain_height_grid.grd"
+# ) %>%
+#   raster::aggregate(10)
+#
+# my_colors <- colorRamp(c("blue", "red"), space = "Lab")
+#
+# raster_colors <- raster::getValues(
+#   crown_diameter_grid / raster::cellStats(crown_diameter_grid, "max")
+# ) %>%
+#   my_colors()
+#
+# raster_colors[which(is.na(raster_colors[, 1])), ] <- 0
+#
+# raster_colors / 255
+#
+# terrain_height_grid %>%
+#   # raster::crop(raster::extent(., 1, 6000, 1, 6000)) %>%
+#   # raster::aggregate(10) %>%
+#   rayshader::raster_to_matrix() %>%
+#   rayshader::sphere_shade(texture = "desert") %>%
+#   rayshader::add_overlay(raster_colors / 255) %>%
+#   rayshader::plot_map()
+
 
 ground_points <- lidR::readLAScatalog(
   list.files("../../Data/output/catalog_processing",
