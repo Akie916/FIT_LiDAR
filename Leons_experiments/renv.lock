@@ -1,6 +1,6 @@
 {
   "R": {
-    "Version": "4.0.2",
+    "Version": "4.0.3",
     "Repositories": [
       {
         "Name": "CRAN",
@@ -249,9 +249,9 @@
     },
     "crownsegmentr": {
       "Package": "crownsegmentr",
-      "Version": "0.0.0.9000",
+      "Version": "0.1.2",
       "Source": "unknown",
-      "Hash": "5d3e8bdcd2e895f86c021be5ba4e4aa1"
+      "Hash": "65bd49ca0c964cb37999a532f4a3c30d"
     },
     "curl": {
       "Package": "curl",
