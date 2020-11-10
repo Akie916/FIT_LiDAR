@@ -170,7 +170,8 @@ raster::writeRaster(
   raster::raster(
     "../../Data/output/exploration/ground_height_wo_noise_n_dupes_res_1.grd"
   ),
-  filename = "../../Data/output/exploration/vegetation_height_wo_noise_n_dupes_res_1.grd",
+  filename =
+    "../../Data/output/exploration/vegetation_height_wo_noise_n_dupes_res_1.grd",
   overwrite = TRUE
 )
 
@@ -277,12 +278,10 @@ ggplot(slope_values) +
 # -> The difference between the resolutions is very small
 
 
-# Plot Point Data ---------------------------------------------------------
-
-source("R/utility.R")
+# Add Tree Data to Point Cloud --------------------------------------------
 
 segmentation_output_directory <-
-  "../../Data/output/segmentation/cd2th_0_4_ch2th_0_75/"
+  "../../Data/output/segmentation/cd2th_0_5_ch2th_1/"
 
 segmented_points <- lidR::readLAS(
   paste0(segmentation_output_directory, "segmented_points.laz")
@@ -297,7 +296,15 @@ point_cloud_with_data <- crown_hulls %>%
   .[segmented_points@data, on = "crown_id"] %>%
   mutate(diameter_convex_mean_log = log(diameter_convex_mean))
 
-for (attribute_name in c("diameter_convex_mean")) {
+for (attribute_name in c(
+  "diameter_convex_mean",
+  "num_points",
+  "num_pulses",
+  "max_z",
+  "slope_mean",
+  "terrain_height_range",
+  "ground_point_density_mean"
+)) {
   segmented_points <- lidR::add_lasattribute(segmented_points,
     point_cloud_with_data[[attribute_name]],
     name = attribute_name,
@@ -305,16 +312,27 @@ for (attribute_name in c("diameter_convex_mean")) {
   )
 }
 
+segmented_points <- lidR::unnormalize_height(segmented_points)
+lidR::remove_lasattribute(segmented_points, "Zref")
+
+lidR::writeLAS(
+  segmented_points,
+  paste0(
+    "../../Data/output/exploration/",
+    "segmented_points_with_data_unnormalized_cd2th_0_5_ch2th_1.laz"
+  )
+)
+
 system.file("extdata", "Topography.laz", package = "lidR") %>%
   lidR::readLAS(.) %>%
   lidR::normalize_height(., lidR::tin(), add_lasattribute = FALSE) %>%
   lidR::unnormalize_height(.) %>%
   lidR::writeLAS(., paste0(tempfile(), ".laz"))
 
-lidR::writeLAS(
-  segmented_points,
-  "../../Data/output/exploration/segmented_points_with_data_cd2th_0_4_ch2th_0_75.laz"
-)
+
+# Plot Point Data ---------------------------------------------------------
+
+source("R/utility.R")
 
 segmented_points %>%
   lidR_clip_relative_rectangle(width = 6000, height = 6000, x_left = 2000) %>%
@@ -489,3 +507,59 @@ trees %>%
     canvas = TRUE
   )
 
+
+# Create a 3D-Terrain Model -----------------------------------------------
+
+# Generate the elevation matrix required by rayshader
+elevation_matrix <- lidR::readLAScatalog(
+  "../../Data/output/exploration/ground_points_wo_noise_n_dupes.laz",
+  chunk_size = 2000
+) %>%
+  lidR::grid_terrain(., res = 4, algorithm = lidR::tin()) %>%
+  rayshader::raster_to_matrix(.)
+
+# Calculate raytraced shadow maps
+canopy_hillshade <- elevation_matrix %>%
+  rayshader::sphere_shade(., sunangle = 180, texture = "desert") %>%
+  rayshader::add_shadow(.,
+    shadowmap = rayshader::ray_shade(
+      elevation_matrix,
+      sunangle = 180,
+      multicore = TRUE
+    ),
+    max_darken = 0.5
+  ) %>%
+  rayshader::add_shadow(.,
+    shadowmap = rayshader::ambient_shade(elevation_matrix, multicore = TRUE),
+    max_darken = 0
+  )
+
+# Plot everything
+rayshader::plot_3d(
+  canopy_hillshade,
+  elevation_matrix,
+  zscale = 4,
+  zoom = 0.5,
+  theta = 110,
+  phi = 25,
+  background = "white",
+  windowsize = c(1920, 1080)
+)
+rayshader::render_scalebar(
+  limits = c(6, 4, 2, 0),
+  position = "N",
+  y = 50,
+  segments = 6,
+  scale_length = c(0, 1/2),
+  label_unit = "km",
+  offset = 100,
+  text_x_offset = 50,
+  text_y_offset = -10,
+  # clear_scalebar = TRUE
+)
+rayshader::render_compass(
+  # position = "N",
+  x = 300, y = -30, z = -1000,
+  compass_radius = 150,
+  # clear_compass = TRUE
+)
