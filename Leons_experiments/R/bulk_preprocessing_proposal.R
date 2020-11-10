@@ -40,8 +40,8 @@ library("dplyr")  # mainly for investigating and removing duplicated crown IDs
 future::plan(strategy = future::multisession)
 
 # Segmentation settings
-cd2th = 0.3  # crown diameter / tree height
-ch2th = 0.5  # crown height / tree height
+cd2th = 0.5  # crown diameter / tree height
+ch2th = 1  # crown height / tree height
 
 # Output directories
 output_directory <- "../../Data/output/"
@@ -62,6 +62,7 @@ normalized_points_prefix <- "normalized_points"
 canopy_height_grid_prefix <- "canopy_height_grid"
 edge_clipped_points_name <- "edge_clipped_points"
 homogenized_points_prefix <- "homogenized_points"
+homogenized_points_with_data_prefix <- "homogenized_points_with_data"
 segmented_points_name <- "segmented_points"
 segmented_points_with_data_name <- "segmented_points_with_data"
 terrain_height_grid_name <- "terrain_height_grid"
@@ -158,7 +159,7 @@ edge_clipped_points <- lidR::clip_rectangle(above_ground_points,
 )
 
 
-# Homogenize Points -------------------------------------------------------
+# Homogenize Pulses -------------------------------------------------------
 
 edge_clipped_points <- lidR::readLAScatalog(
   glue(catalog_output_directory, edge_clipped_points_name, ".laz"),
@@ -172,10 +173,19 @@ lidR::opt_output_files(edge_clipped_points) <- glue(
 )
 lidR::opt_laz_compression(edge_clipped_points) <- TRUE
 
-set.seed(1234)
-# This takes less than 5 minutes on my machine
-homogenized_points <- lidR::decimate_points(edge_clipped_points,
-  algorithm = lidR::homogenize(density = 0.5, res = 2)
+homogenize_pulses <- function(las, bbox) {
+  set.seed(1234)
+  lidR::retrieve_pulses(las) %>%
+    lidR::decimate_points(.,
+      lidR::homogenize(density = 0.5, res = sqrt(8), use_pulse = TRUE)
+    ) %>%
+    lidR::filter_poi(dplyr::near(buffer, 0))
+}
+
+# This takes about 8 minutes on my machine
+lidR::catalog_sapply(edge_clipped_points,
+  FUN = homogenize_pulses,
+  .options = list(automerge = TRUE, autoread = TRUE)
 )
 
 
@@ -215,7 +225,7 @@ raster::writeRaster(ground_point_density,
 )
 
 
-# Segment Individual Trees ------------------------------------------------
+# Get Terrain Data at Each Point (by Akie) --------------------------------
 
 homogenized_points <- lidR::readLAS(
   list.files(catalog_output_directory,
@@ -224,35 +234,6 @@ homogenized_points <- lidR::readLAS(
   )
 )
 
-# This takes somewhere between 5 to 10 minutes on my machine
-segmented_points <- crownsegmentr::segment_tree_crowns(
-  point_cloud = homogenized_points@data,
-  crown_diameter_2_tree_height = cd2th,
-  crown_height_2_tree_height = ch2th
-)
-
-# Add the crown IDs to the LAS data
-segmented_points <- lidR::add_lasattribute(homogenized_points,
-  segmented_points[["crown_id"]],
-  name = "crown_id",
-  desc = "Tree Crown ID"
-)
-
-# Remove any unsegmented points
-segmented_points <- lidR::filter_poi(segmented_points, crown_id > 0)
-
-lidR::writeLAS(segmented_points,
-  file = glue("{segmentation_output_directory}{segmented_points_name}.laz")
-)
-
-rm(homogenized_points, segmented_points)
-
-
-# Get Terrain Data at Segmented Points (by Akie) --------------------------
-
-segmented_points <- lidR::readLAS(
-  glue("{segmentation_output_directory}{segmented_points_name}.laz")
-)
 terrain_height_grid <- raster::raster(
   glue("{catalog_output_directory}{terrain_height_grid_name}")
 )
@@ -261,65 +242,161 @@ ground_point_density <- raster::raster(
 )
 land_use_grid <- raster::raster(land_use_grid_path)
 
-# Calculate the terrain height of each crown point with the Zref attribute that
-# was created by the lidR::normalize_height function
-segmented_points <- lidR::add_lasattribute(segmented_points,
-  segmented_points@data[["Zref"]] - segmented_points@data[["Z"]],
-  name = "terrain_height",
-  desc = "terrain height"
-)
-
 # This took about a minute on my machine
-terrain_height_grid_res_2 <- raster::aggregate(terrain_height_grid, fact = 4)
-
-slope_and_aspect_grid <- raster::terrain(terrain_height_grid_res_2,
+slope_and_aspect_grid <- raster::terrain(
+  raster::aggregate(terrain_height_grid, fact = 4),
   opt = c("slope", "aspect"),
   unit = "degrees",
   neighbors = 8
 )
 
-# This took less than five minutes on my machine
-segmented_points <- lidR::merge_spatial(segmented_points,
-  source = slope_and_aspect_grid[["slope"]],
-  attribute = "slope"
+# All of this took about three minutes on my machine
+lidR::add_lasattribute(homogenized_points,
+  # Calculate the terrain height of each crown point with the Zref attribute
+  # that was created by the lidR::normalize_height function
+  homogenized_points@data[["Zref"]] - homogenized_points@data[["Z"]],
+  name = "terrain_height",
+  desc = "terrain height"
 ) %>%
-  lidR::add_lasattribute(name = "slope", desc = "slope")
-# TODO Suggest lidR maintainer to add a add_lasattribute parameter to
-# merge_spatial like in normalize_height
-
-# This took less than five minutes on my machine
-segmented_points <- lidR::merge_spatial(segmented_points,
-  source = slope_and_aspect_grid[["aspect"]],
-  attribute = "aspect"
-) %>%
-  lidR::add_lasattribute(name = "aspect", desc = "aspect")
-
-segmented_points <- lidR::merge_spatial(segmented_points,
-  source = ground_point_density,
-  attribute = "ground_point_density"
-) %>%
-  lidR::add_lasattribute(
+  lidR::merge_spatial(.,
+    source = slope_and_aspect_grid[["slope"]],
+    attribute = "slope"
+  ) %>%
+  lidR::add_lasattribute(., name = "slope", desc = "slope") %>%
+  lidR::merge_spatial(.,
+    source = slope_and_aspect_grid[["aspect"]],
+    attribute = "aspect"
+  ) %>%
+  lidR::add_lasattribute(., name = "aspect", desc = "aspect") %>%
+  lidR::merge_spatial(.,
+    source = ground_point_density,
+    attribute = "ground_point_density"
+  ) %>%
+  lidR::add_lasattribute(.,
     name = "ground_point_density",
     desc = "ground point density"
+  ) %>%
+  lidR::merge_spatial(.,
+    source = land_use_grid,
+    attribute = "land_use"
+  ) %>%
+  lidR::add_lasattribute(., name = "land_use", desc = "land use") %>%
+  lidR::writeLAS(.,
+    glue("{catalog_output_directory}{homogenized_points_with_data_prefix}.laz")
   )
 
-segmented_points <- lidR::merge_spatial(segmented_points,
-  source = land_use_grid,
-  attribute = "land_use"
-) %>%
-  lidR::add_lasattribute(name = "land_use", desc = "land use")
+rm(
+  homogenized_points,
+  terrain_height_grid,
+  slope_and_aspect_grid,
+  land_use_grid
+)
+
+
+# Segment Individual Trees ------------------------------------------------
+
+homogenized_points <- lidR::readLAScatalog(
+  list.files(catalog_output_directory,
+    pattern = glue("{homogenized_points_with_data_prefix}\\.laz"),
+    full.names = TRUE
+  ),
+  chunk_size = 2000
+)
+
+# This takes somewhere between 5 to 10 minutes on my machine
+segmented_points <- crownsegmentr::segment_tree_crowns(
+  point_cloud = homogenized_points,
+  crown_diameter_2_tree_height = cd2th,
+  crown_height_2_tree_height = ch2th
+)
+
+non_zero_crown_ids <- segmented_points@data$crown_id
+non_zero_crown_ids <- non_zero_crown_ids[!near(non_zero_crown_ids, 0)]
+
+smallest_not_zero_id <- min(non_zero_crown_ids)
+
+smaller_crown_ids <- head(segmented_points@data, n = 10)
+smaller_crown_ids <- smaller_crown_ids[
+  !near(crown_id, 0), data.table::`:=`(crown_id = crown_id - smallest_not_zero_id)]
 
 lidR::writeLAS(segmented_points,
-  glue("{segmentation_output_directory}{segmented_points_with_data_name}.las"),
-  index = TRUE
+  file = glue("{segmentation_output_directory}{segmented_points_name}.laz")
 )
 
-rm(
-  segmented_points,
-  terrain_height_grid,
-  terrain_height_grid_res_2,
-  slope_and_aspect_grid
-)
+rm(homogenized_points, segmented_points)
+
+
+# [Get Terrain Data at Segmented Points (by Akie)] ------------------------
+
+# segmented_points <- lidR::readLAS(
+#   glue("{segmentation_output_directory}{segmented_points_name}.laz")
+# )
+# terrain_height_grid <- raster::raster(
+#   glue("{catalog_output_directory}{terrain_height_grid_name}")
+# )
+# ground_point_density <- raster::raster(
+#   glue("{catalog_output_directory}{ground_point_density_grid_name}")
+# )
+# land_use_grid <- raster::raster(land_use_grid_path)
+#
+# # Calculate the terrain height of each crown point with the Zref attribute that
+# # was created by the lidR::normalize_height function
+# segmented_points <- lidR::add_lasattribute(segmented_points,
+#   segmented_points@data[["Zref"]] - segmented_points@data[["Z"]],
+#   name = "terrain_height",
+#   desc = "terrain height"
+# )
+#
+# # This took about a minute on my machine
+# terrain_height_grid_res_2 <- raster::aggregate(terrain_height_grid, fact = 4)
+#
+# slope_and_aspect_grid <- raster::terrain(terrain_height_grid_res_2,
+#   opt = c("slope", "aspect"),
+#   unit = "degrees",
+#   neighbors = 8
+# )
+#
+# # This took less than five minutes on my machine
+# segmented_points <- lidR::merge_spatial(segmented_points,
+#   source = slope_and_aspect_grid[["slope"]],
+#   attribute = "slope"
+# ) %>%
+#   lidR::add_lasattribute(., name = "slope", desc = "slope")
+#
+# # This took less than five minutes on my machine
+# segmented_points <- lidR::merge_spatial(segmented_points,
+#   source = slope_and_aspect_grid[["aspect"]],
+#   attribute = "aspect"
+# ) %>%
+#   lidR::add_lasattribute(., name = "aspect", desc = "aspect")
+#
+# segmented_points <- lidR::merge_spatial(segmented_points,
+#   source = ground_point_density,
+#   attribute = "ground_point_density"
+# ) %>%
+#   lidR::add_lasattribute(.,
+#     name = "ground_point_density",
+#     desc = "ground point density"
+#   )
+#
+# segmented_points <- lidR::merge_spatial(segmented_points,
+#   source = land_use_grid,
+#   attribute = "land_use"
+# ) %>%
+#   lidR::add_lasattribute(., name = "land_use", desc = "land use")
+#
+# lidR::writeLAS(segmented_points,
+#   glue("{segmentation_output_directory}{segmented_points_with_data_name}.las"),
+#   index = TRUE
+# )
+#
+# rm(
+#   segmented_points,
+#   terrain_height_grid,
+#   terrain_height_grid_res_2,
+#   slope_and_aspect_grid,
+#   land_use_grid
+# )
 
 
 # [Calculate Tree Data] ---------------------------------------------------
@@ -328,21 +405,18 @@ rm(
 # some reason I just get the error message "could not find function
 # "calculate_tree_metrics"". Maybe it's a bug in lidR.
 
-# lidR::delineate_crowns(segmented_points_with_data,
-#   type = "convex",
-#   func = ~calculate_tree_metrics(X, Y, Z, terrain_height, slope, aspect),
-#   attribute = "crown_id"
-# )
-
 
 # Calculate Tree Metrics --------------------------------------------------
 
 segmented_points_with_data <- lidR::readLAScatalog(
-  glue("{segmentation_output_directory}{segmented_points_with_data_name}.las"),
+  glue("{segmentation_output_directory}{segmented_points_name}.laz"),
   chunk_size = 2000
-)
+) %>%
+  # Remove any unsegmented points
+  lidR::filter_poi(., !dplyr::near(crown_id, 0))
 
 calculate_tree_metrics <- function(x, y, z,
+                                   gpstime,
                                    terrain_height,
                                    slope,
                                    aspect,
@@ -365,6 +439,8 @@ calculate_tree_metrics <- function(x, y, z,
     y_at_max_z = y[max_z_index],
 
     num_points = length(x),
+
+    num_pulses = data.table::uniqueN(gpstime),
 
     land_use_at_max_z = land_use[max_z_index],
     # This is cooler but takes too long to be worth the wait
@@ -410,18 +486,23 @@ calculate_tree_metrics <- function(x, y, z,
 set.seed(1234)
 tree_metrics_points <- lidR::tree_metrics(segmented_points_with_data,
   func = ~calculate_tree_metrics(
-    X, Y, Z, terrain_height, slope, aspect, ground_point_density, land_use
+    X, Y, Z,
+    gpstime,
+    terrain_height,
+    slope,
+    aspect,
+    ground_point_density,
+    land_use
   ),
   attribute = "crown_id"
 )
 
-# Convert the points to an sf object because I don't know how to write the data
-# to disk directly
-tree_metrics_points <- sf::st_as_sf(tree_metrics_points)
-
-sf::write_sf(tree_metrics_points,
- glue(segmentation_output_directory, tree_metrics_points_name, ".gpkg")
-)
+# Convert the points to an sf object because I don't know how to write sp
+# objects to disk directly
+sf::st_as_sf(tree_metrics_points) %>%
+  sf::write_sf(
+   glue(segmentation_output_directory, tree_metrics_points_name, ".gpkg")
+  )
 
 rm(tree_metrics_points)
 
@@ -440,7 +521,10 @@ rm(tree_metrics_points)
 segmented_points <- lidR::readLAScatalog(
   glue("{segmentation_output_directory}{segmented_points_name}.laz"),
   chunk_size = 1000
-)
+) %>%
+  # Remove any unsegmented points
+  lidR::filter_poi(., !dplyr::near(crown_id, 0))
+
 lidR::opt_output_files(segmented_points) <- glue(
   catalog_output_directory, "{convex_crown_hulls_prefix}_{output_file_pattern}"
 )
@@ -448,7 +532,7 @@ segmented_points@output_options[[
   "drivers"]][["Spatial"]][["extension"
 ]] <- ".gpkg"
 
-# This takes about 5 minutes on my machine
+# This takes somewhere between 5 to 10 minutes on my machine
 lidR::delineate_crowns(segmented_points,
   type = "convex",
   attribute = "crown_id"
@@ -475,9 +559,9 @@ convex_crown_hull_diameter_max <- sapply(convex_crown_hulls[["geom"]],
 # Calculate the crown area and mean diameter and write the data to disk
 convex_crown_hulls %>%
   mutate(
+    area_convex = sf::st_area(geom),
     diameter_convex_max = convex_crown_hull_diameter_max,
-    convex_area = sf::st_area(geom),
-    diameter_mean =
+    diameter_convex_mean =
       sf::st_cast(geom, to = "LINESTRING") %>% sf::st_length() / pi
   ) %>%
   sf::write_sf(
