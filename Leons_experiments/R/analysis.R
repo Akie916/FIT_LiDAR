@@ -4,8 +4,10 @@ library(tidyverse)
 # Combine the crown polygon datasets into one (without polygons) ----------
 
 file_paths <- list.files(
-  "../../Data/output/segmentation/crown_hulls_with_data_homogenized_pulse_density",
-  recursive = TRUE,
+  paste0(
+    "../../Data/output/segmentation/",
+    "crown_hulls_with_data_v2_homogenized_pulse_instead_of_point_density/"
+  ),
   full.names = TRUE
 )
 
@@ -58,12 +60,20 @@ crowns <- bind_rows(crowns) %>%
     ch2th_x_cd2th = fct_cross(ch_2_th, cd_2_th)
   )
 
-readr::write_rds(crowns, "../../Data/output/crown_hulls_with_data.gpkg")
+readr::write_rds(crowns,
+  paste0(
+    "../../Data/output/crown_hulls_with_data_v3_",
+    "homogenize_before_removing_normalization_effects.rds"
+  )
+)
 
 
 # Load Data ---------------------------------------------------------------
 
-crowns <- readr::read_rds("../../Data/output/crown_hulls_with_data.gpkg") %>%
+crowns <- readr::read_rds(paste0(
+  "../../Data/output/crown_hulls_with_data_v3_",
+  "homogenize_before_removing_normalization_effects.rds"
+)) %>%
   mutate(across(c(cd2th_x_ch2th, ch2th_x_cd2th),
     ~fct_relabel(.x, ~str_replace(., pattern = ":", replacement = " | "))
   ))
@@ -392,7 +402,10 @@ crowns %>%
 ggplot() +
   # geom_point(aes(x = max_z, y = diameter_convex_mean / max_z), size = 0.2)
   geom_point(aes(x = area_convex, y = diameter_convex_mean / max_z), size = 0.2)
-  # geom_point(aes(x = diameter_convex_mean, y = diameter_convex_mean / max_z), size = 0.2)
+  # geom_point(
+  #   aes(x = diameter_convex_mean, y = diameter_convex_mean / max_z),
+  #   size = 0.2
+  # )
 
 
 # Crown Lengthiness
@@ -417,3 +430,55 @@ ggplot() +
   # scale_x_log10() + scale_y_log10() +
   facet_grid(rows = vars(ch_2_th), cols = vars(cd_2_th))
 # -> Have I already filtered for crown lengthiness?
+
+
+# Temporary: Compare crowns_v2 with crowns_v3 -----------------------------
+
+crowns <- bind_rows(
+  readr::read_rds(paste0(
+    "../../Data/output/crown_hulls_with_data_v2_",
+    "homogenized_pulse_instead_of_point_density.rds"
+  )) %>%
+    mutate(version = "v2"),
+  readr::read_rds(paste0(
+    "../../Data/output/crown_hulls_with_data_v3_",
+    "homogenize_before_removing_normalization_effects.rds"
+  )) %>%
+    mutate(version = "v3")
+) %>%
+  mutate(version = factor(version))
+
+crowns %>%
+  count(version, land_use_at_max_z, cd2th_x_ch2th) %>%
+  pivot_wider(names_from = version, values_from = n) %>%
+  mutate(
+    v2_minus_v3 = v2 - v3,
+    percent_change = (v2_minus_v3 / v2) * 100
+  ) %>%
+  arrange(desc(v2_minus_v3)) %>%
+ggplot() +
+  geom_boxplot(aes(
+    x = fct_reorder(land_use_at_max_z, v2, .desc = TRUE),
+    y = percent_change
+  )) +
+  guides(x = guide_axis(n.dodge = 2))
+# -> Change in number of detected trees is mostly between 2 to 10 percent less
+# trees in v3
+
+ggplot(crowns) +
+  geom_density(aes(x = max_z, color = cd_2_th, linetype = version)) +
+  scale_color_viridis_d() +
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim= c(0, 30))
+# -> Tree height distribution seems to be shifted a very tiny bit to the right
+
+ggplot(crowns) +
+  geom_density(aes(
+    x = diameter_convex_mean,
+    color = cd_2_th,
+    linetype = version
+  )) +
+  scale_color_viridis_d() +
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim = c(0, 10))
+# -> Same for diameter distribution

@@ -62,8 +62,9 @@ normalized_points_prefix <- "normalized_points"
 canopy_height_grid_prefix <- "canopy_height_grid"
 edge_clipped_points_name <- "edge_clipped_points"
 homogenized_points_prefix <- "homogenized_points"
-homogenized_points_with_data_prefix <- "homogenized_points_with_data"
+edge_clipped_points_with_data_name <- "edge_clipped_points_with_data"
 segmented_points_name <- "segmented_points"
+unsegmented_points_name <- "unsegmented_points"
 segmented_points_with_data_name <- "segmented_points_with_data"
 terrain_height_grid_name <- "terrain_height_grid"
 ground_point_density_grid_name <- "ground_point_density_grid"
@@ -99,11 +100,45 @@ lidR::opt_laz_compression(raw_data) <- TRUE
 no_noise_or_duplicates <- lidR::filter_duplicates(raw_data)
 
 
+# Calculate Terrain Data --------------------------------------------------
+
+no_noise_or_duplicated_points <- lidR::readLAScatalog(
+  list.files(catalog_output_directory,
+    pattern = glue(without_noise_and_duplicates_prefix, "_.*\\.laz"),
+    full.names = TRUE
+  )
+)
+
+# This took about 10 minutes on my machine
+lidR::grid_terrain(no_noise_or_duplicated_points,
+  res =  0.5,
+  algorithm = lidR::tin()
+) %>% raster::writeRaster(.,
+    filename = glue(catalog_output_directory, terrain_height_grid_name),
+    overwrite = TRUE
+  )
+
+# Keep only the ground points
+lidR::opt_filter(no_noise_or_duplicated_points) <- "-keep_class 2"
+
+# This took less than 5 minutes on my machine
+ground_point_density <- lidR::grid_density(no_noise_or_duplicated_points,
+  res = 5
+)
+
+ground_point_density[is.na(ground_point_density)] <- 0
+
+raster::writeRaster(ground_point_density,
+  glue(catalog_output_directory, ground_point_density_grid_name),
+  overwrite = TRUE
+)
+
+
 # Normalize Height Values -------------------------------------------------
 
 no_noise_or_duplicates <- lidR::readLAScatalog(
   list.files(catalog_output_directory,
-    pattern = glue("{without_noise_and_duplicates_prefix}_.*\\.laz"),
+    pattern = glue(without_noise_and_duplicates_prefix, "_.*\\.laz"),
     full.names = TRUE
   ),
   chunk_size = 1000
@@ -125,53 +160,22 @@ normalized_points <- lidR::normalize_height(no_noise_or_duplicates,
 )
 
 
-# Remove Points Below 0m --------------------------------------------------
+# Homogenize Pulses -------------------------------------------------------
 
-# Use lidR::readLASCatalog for this instead of lidR::filter_poi because the
-# latter doesn't support catalog processing
-above_ground_points <- lidR::readLAScatalog(
+normalized_points <- lidR::readLAScatalog(
   list.files(catalog_output_directory,
     pattern = glue("{normalized_points_prefix}_.*\\.laz"),
     full.names = TRUE
   ),
-  filter = "-drop_z_below 0"
-)
-
-
-# Remove Points with Possible Normalization Edge Effects ------------------
-
-# This procedure does not require the creation of an output file but the
-# resulting LAS object is too big to be kept in my limited memory
-lidR::opt_output_files(above_ground_points) <- glue(
-  catalog_output_directory,
-  edge_clipped_points_name
-)
-lidR::opt_laz_compression(above_ground_points) <- TRUE
-
-edge_width <- 0.5
-
-# This took about a minute on my machine
-edge_clipped_points <- lidR::clip_rectangle(above_ground_points,
-  xleft = above_ground_points@bbox["x", "min"] + edge_width,
-  ybottom = above_ground_points@bbox["y", "min"] + edge_width,
-  xright = above_ground_points@bbox["x", "max"] - edge_width,
-  ytop = above_ground_points@bbox["y", "max"] - edge_width,
-)
-
-
-# Homogenize Pulses -------------------------------------------------------
-
-edge_clipped_points <- lidR::readLAScatalog(
-  glue(catalog_output_directory, edge_clipped_points_name, ".laz"),
   chunk_size = 2000
 )
 
 # The decimate_points procedure requires the creation of output files
-lidR::opt_output_files(edge_clipped_points) <- glue(
+lidR::opt_output_files(normalized_points) <- glue(
   catalog_output_directory,
   "{homogenized_points_prefix}_{output_file_pattern}"
 )
-lidR::opt_laz_compression(edge_clipped_points) <- TRUE
+lidR::opt_laz_compression(normalized_points) <- TRUE
 
 homogenize_pulses <- function(las, bbox) {
   set.seed(1234)
@@ -183,56 +187,54 @@ homogenize_pulses <- function(las, bbox) {
 }
 
 # This takes about 8 minutes on my machine
-lidR::catalog_sapply(edge_clipped_points,
+lidR::catalog_sapply(normalized_points,
   FUN = homogenize_pulses,
   .options = list(automerge = TRUE, autoread = TRUE)
 )
 
 
-# Calculate Terrain Data --------------------------------------------------
+# Remove Ground Points and Points <= 0m -----------------------------------
 
-no_noise_or_duplicated_points <- lidR::readLAScatalog(
+# Use lidR::readLASCatalog for this instead of lidR::filter_poi because the
+# latter doesn't support catalog processing
+homogenized_points <- lidR::readLAScatalog(
   list.files(catalog_output_directory,
-    pattern = glue("{without_noise_and_duplicates_prefix}_.*\\.laz"),
+    pattern = glue("{homogenized_points_prefix}_x.*\\.laz"),
     full.names = TRUE
-  )
+  ),
+  filter = "-drop_z_below 0.0001 -drop_class 2"
 )
+# The z threshold should be sufficiently small since the scale factor of the Z
+# values, i.e. their precision is given with 0.001.
 
-# This took about 10 minutes on my machine
-terrain_height_grid <- lidR::grid_terrain(no_noise_or_duplicated_points,
-  res =  0.5,
-  algorithm = lidR::tin()
+
+# Remove Points with Possible Normalization Edge Effects ------------------
+
+# This procedure does not require the creation of an output file but the
+# resulting LAS object is too big to be kept in my limited memory
+lidR::opt_output_files(homogenized_points) <- glue(
+  catalog_output_directory,
+  edge_clipped_points_name
 )
+lidR::opt_laz_compression(homogenized_points) <- TRUE
 
-raster::writeRaster(terrain_height_grid,
-  filename = glue("{catalog_output_directory}{terrain_height_grid_name}"),
-  overwrite = TRUE
-)
+edge_width <- 0.5
 
-# Keep only the ground points
-lidR::opt_filter(no_noise_or_duplicated_points) <- "-keep_class 2"
-
-# This took less than 5 minutes on my machine
-ground_point_density <- lidR::grid_density(no_noise_or_duplicated_points,
-  res = 5
-)
-
-ground_point_density[is.na(ground_point_density)] <- 0
-
-raster::writeRaster(ground_point_density,
-  glue("{catalog_output_directory}{ground_point_density_grid_name}"),
-  overwrite = TRUE
+# This took about a minute on my machine
+edge_clipped_points <- lidR::clip_rectangle(homogenized_points,
+  xleft = homogenized_points@bbox["x", "min"] + edge_width,
+  ybottom = homogenized_points@bbox["y", "min"] + edge_width,
+  xright = homogenized_points@bbox["x", "max"] - edge_width,
+  ytop = homogenized_points@bbox["y", "max"] - edge_width,
 )
 
 
 # Get Terrain Data at Each Point (by Akie) --------------------------------
 
-homogenized_points <- lidR::readLAS(
-  list.files(catalog_output_directory,
-    pattern = glue("{homogenized_points_prefix}_.*\\.laz"),
-    full.names = TRUE
-  )
-)
+edge_clipped_points <- lidR::readLAS(glue(
+  catalog_output_directory,
+  edge_clipped_points_name, ".laz"
+))
 
 terrain_height_grid <- raster::raster(
   glue("{catalog_output_directory}{terrain_height_grid_name}")
@@ -251,10 +253,10 @@ slope_and_aspect_grid <- raster::terrain(
 )
 
 # All of this took about three minutes on my machine
-lidR::add_lasattribute(homogenized_points,
+lidR::add_lasattribute(edge_clipped_points,
   # Calculate the terrain height of each crown point with the Zref attribute
   # that was created by the lidR::normalize_height function
-  homogenized_points@data[["Zref"]] - homogenized_points@data[["Z"]],
+  edge_clipped_points@data[["Zref"]] - edge_clipped_points@data[["Z"]],
   name = "terrain_height",
   desc = "terrain height"
 ) %>%
@@ -282,11 +284,15 @@ lidR::add_lasattribute(homogenized_points,
   ) %>%
   lidR::add_lasattribute(., name = "land_use", desc = "land use") %>%
   lidR::writeLAS(.,
-    glue("{catalog_output_directory}{homogenized_points_with_data_prefix}.laz")
+    glue(
+      catalog_output_directory,
+      edge_clipped_points_with_data_name, ".las"
+    ),
+    index = TRUE
   )
 
 rm(
-  homogenized_points,
+  edge_clipped_points,
   terrain_height_grid,
   slope_and_aspect_grid,
   land_use_grid
@@ -296,10 +302,7 @@ rm(
 # Segment Individual Trees ------------------------------------------------
 
 homogenized_points <- lidR::readLAScatalog(
-  list.files(catalog_output_directory,
-    pattern = glue("{homogenized_points_with_data_prefix}\\.laz"),
-    full.names = TRUE
-  ),
+  glue(catalog_output_directory, edge_clipped_points_with_data_name, ".las"),
   chunk_size = 2000
 )
 
@@ -310,93 +313,20 @@ segmented_points <- crownsegmentr::segment_tree_crowns(
   crown_height_2_tree_height = ch2th
 )
 
-non_zero_crown_ids <- segmented_points@data$crown_id
-non_zero_crown_ids <- non_zero_crown_ids[!near(non_zero_crown_ids, 0)]
+# Store segmented and unsegmented points separately
+segmented_points %>%
+  lidR::filter_poi(., !near(crown_id, 0)) %>%
+  lidR::writeLAS(.,
+    file = glue(segmentation_output_directory, segmented_points_name, ".laz")
+  )
 
-smallest_not_zero_id <- min(non_zero_crown_ids)
-
-smaller_crown_ids <- head(segmented_points@data, n = 10)
-smaller_crown_ids <- smaller_crown_ids[
-  !near(crown_id, 0), data.table::`:=`(crown_id = crown_id - smallest_not_zero_id)]
-
-lidR::writeLAS(segmented_points,
-  file = glue("{segmentation_output_directory}{segmented_points_name}.laz")
-)
+segmented_points %>%
+  lidR::filter_poi(., near(crown_id, 0)) %>%
+  lidR::writeLAS(.,
+    file = glue(segmentation_output_directory, unsegmented_points_name, ".laz")
+  )
 
 rm(homogenized_points, segmented_points)
-
-
-# [Get Terrain Data at Segmented Points (by Akie)] ------------------------
-
-# segmented_points <- lidR::readLAS(
-#   glue("{segmentation_output_directory}{segmented_points_name}.laz")
-# )
-# terrain_height_grid <- raster::raster(
-#   glue("{catalog_output_directory}{terrain_height_grid_name}")
-# )
-# ground_point_density <- raster::raster(
-#   glue("{catalog_output_directory}{ground_point_density_grid_name}")
-# )
-# land_use_grid <- raster::raster(land_use_grid_path)
-#
-# # Calculate the terrain height of each crown point with the Zref attribute that
-# # was created by the lidR::normalize_height function
-# segmented_points <- lidR::add_lasattribute(segmented_points,
-#   segmented_points@data[["Zref"]] - segmented_points@data[["Z"]],
-#   name = "terrain_height",
-#   desc = "terrain height"
-# )
-#
-# # This took about a minute on my machine
-# terrain_height_grid_res_2 <- raster::aggregate(terrain_height_grid, fact = 4)
-#
-# slope_and_aspect_grid <- raster::terrain(terrain_height_grid_res_2,
-#   opt = c("slope", "aspect"),
-#   unit = "degrees",
-#   neighbors = 8
-# )
-#
-# # This took less than five minutes on my machine
-# segmented_points <- lidR::merge_spatial(segmented_points,
-#   source = slope_and_aspect_grid[["slope"]],
-#   attribute = "slope"
-# ) %>%
-#   lidR::add_lasattribute(., name = "slope", desc = "slope")
-#
-# # This took less than five minutes on my machine
-# segmented_points <- lidR::merge_spatial(segmented_points,
-#   source = slope_and_aspect_grid[["aspect"]],
-#   attribute = "aspect"
-# ) %>%
-#   lidR::add_lasattribute(., name = "aspect", desc = "aspect")
-#
-# segmented_points <- lidR::merge_spatial(segmented_points,
-#   source = ground_point_density,
-#   attribute = "ground_point_density"
-# ) %>%
-#   lidR::add_lasattribute(.,
-#     name = "ground_point_density",
-#     desc = "ground point density"
-#   )
-#
-# segmented_points <- lidR::merge_spatial(segmented_points,
-#   source = land_use_grid,
-#   attribute = "land_use"
-# ) %>%
-#   lidR::add_lasattribute(., name = "land_use", desc = "land use")
-#
-# lidR::writeLAS(segmented_points,
-#   glue("{segmentation_output_directory}{segmented_points_with_data_name}.las"),
-#   index = TRUE
-# )
-#
-# rm(
-#   segmented_points,
-#   terrain_height_grid,
-#   terrain_height_grid_res_2,
-#   slope_and_aspect_grid,
-#   land_use_grid
-# )
 
 
 # [Calculate Tree Data] ---------------------------------------------------
@@ -409,11 +339,9 @@ rm(homogenized_points, segmented_points)
 # Calculate Tree Metrics --------------------------------------------------
 
 segmented_points_with_data <- lidR::readLAScatalog(
-  glue("{segmentation_output_directory}{segmented_points_name}.laz"),
+  glue(segmentation_output_directory, segmented_points_name, ".laz"),
   chunk_size = 2000
-) %>%
-  # Remove any unsegmented points
-  lidR::filter_poi(., !dplyr::near(crown_id, 0))
+)
 
 calculate_tree_metrics <- function(x, y, z,
                                    gpstime,
@@ -519,11 +447,9 @@ rm(tree_metrics_points)
 # Calculate Convex 2D (XY) Crown Hull Data ---------------------------
 
 segmented_points <- lidR::readLAScatalog(
-  glue("{segmentation_output_directory}{segmented_points_name}.laz"),
+  glue(segmentation_output_directory, segmented_points_name, ".laz"),
   chunk_size = 1000
-) %>%
-  # Remove any unsegmented points
-  lidR::filter_poi(., !dplyr::near(crown_id, 0))
+)
 
 lidR::opt_output_files(segmented_points) <- glue(
   catalog_output_directory, "{convex_crown_hulls_prefix}_{output_file_pattern}"
@@ -542,7 +468,7 @@ lidR::delineate_crowns(segmented_points,
 # Merge the partial crown hull files
 convex_crown_hulls <- dplyr::bind_rows(lapply(
   list.files(catalog_output_directory,
-    pattern = glue("{convex_crown_hulls_prefix}_.*\\.gpkg"),
+    pattern = glue(convex_crown_hulls_prefix, "_.*\\.gpkg"),
     full.names = TRUE
   ),
   sf::read_sf
@@ -571,7 +497,7 @@ convex_crown_hulls %>%
 # Remove the partial files
 file.remove(
   list.files(catalog_output_directory,
-    pattern = glue("{convex_crown_hulls_prefix}_.*"),
+    pattern = glue(convex_crown_hulls_prefix, "_.*"),
     full.names = TRUE
   )
 )
