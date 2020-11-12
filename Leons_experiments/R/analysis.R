@@ -6,7 +6,7 @@ library(tidyverse)
 file_paths <- list.files(
   paste0(
     "../../Data/output/segmentation/",
-    "crown_hulls_with_data_v2_homogenized_pulse_instead_of_point_density/"
+    "crown_hulls_with_data_v3_homogenize_before_removing_normalization_effects"
   ),
   full.names = TRUE
 )
@@ -91,9 +91,9 @@ land_use_colors <- c(
   "yellowgreen"
 )
 
-land_use_grid <- raster::raster("../../Data/land_use/Akies_LU_grid.tif")
-
-land_use_areas <- tibble(land_use = raster::values(land_use_grid)) %>%
+land_use_areas <- tibble(land_use = raster::values(
+  raster::raster("../../Data/land_use/Akies_LU_grid.tif")
+)) %>%
   mutate(land_use = factor(land_use) %>% fct_recode(
     `Bare rocks` = "1",
     `Broad-leaved forest` = "2",
@@ -110,17 +110,25 @@ land_use_areas <- tibble(land_use = raster::values(land_use_grid)) %>%
   mutate(area_hectare = area_m2 / 1e4)
 
 
+# Ggplot Theme Settings ---------------------------------------------------
+
+# Increase the default text size for all ggplots (the ggplot_default_theme
+# variable is assigned the unmodified theme)
+ggplot_default_theme <- theme_update(text = element_text(size = 16))
+
+
 # Analysis ----------------------------------------------------------------
 
-# TODO After aggreeing on outlier thresholds create a subset without these
-# outliers and sort the land use factor by the number of trees per land use
-# category so that the categories with the least data points are placed last in
-# all plots.
+# Sort the land use factor by the number of observations for each land use
+# TODO Agree on outlier thresholds/criteria and apply them here
+crowns <- crowns %>%
+  add_count(land_use_at_max_z, name = "land_use_n") %>%
+  mutate(
+    land_use_at_max_z = fct_reorder(land_use_at_max_z, land_use_n, .desc = TRUE)
+  )
 
 # TODO make sure to not filter simply for the sake of zooming into a plot. Use
 # coord_cartesion(xlim(...), ylim(...)) instead.
-
-ggplot_default_theme <- theme_update(text = element_text(size = 16))
 
 # Tree density ----
 crowns %>%
@@ -143,21 +151,23 @@ ggplot() +
     size = 1.5,
     width = 0.15
   ) +
-  scale_color_viridis_d() +
+  scale_color_viridis_d(name = "CH | CD / TH") +
   theme(text = element_text(size = 16)) +
-  guides(x = guide_axis(n.dodge = 2))
+  guides(x = guide_axis(n.dodge = 2)) +
+  xlab("Land Use") + ylab("# Trees / Hectare")
+# -> This shows clear patterns but only because all trees with a crown area < 8
+# have been excluded. If you disable that filter the segmentation parameters are
+# not as clearly separated.
 
 
 # Tree Height Distribution ----
-crowns %>%
-  filter(max_z < 50) %>%
-ggplot() +
+ggplot(crowns) +
   geom_density(aes(x = max_z, color = ch2th_x_cd2th)) +
   scale_color_viridis_d() +
-  facet_wrap(vars(land_use_at_max_z))
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim = c(0, 40))
 
 crowns %>%
-  filter(max_z < 60) %>%
   group_by(cd_2_th, ch_2_th) %>%
   slice_sample(n = 1e4) %>%
   group_by(cd_2_th, ch_2_th, land_use_at_max_z) %>%
@@ -170,18 +180,16 @@ ggplot() +
   geom_line(aes(x = index, y = max_z, color = ch2th_x_cd2th)) +
   scale_color_viridis_d() +
   facet_wrap(vars(land_use_at_max_z)) +
-  scale_x_log10()
+  scale_x_log10() +
+  coord_cartesian(ylim = c(0, 60))
 
 
 # Diameter Distribution ----
-crowns %>%
-  filter(
-    diameter_convex_mean < 20
-  ) %>%
-ggplot() +
+ggplot(crowns) +
   geom_density(aes(x = diameter_convex_mean, color = ch2th_x_cd2th)) +
   scale_color_viridis_d() +
-  facet_wrap(vars(land_use_at_max_z))
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim = c(0, 12))
 
 
 # Point and Pulse Count Density ----
@@ -192,7 +200,7 @@ ggplot(crowns) +
   ) +
   scale_color_viridis_d() +
   facet_wrap(vars(land_use_at_max_z)) +
-  coord_cartesian(xlim = c(5, 30))
+  coord_cartesian(xlim = c(5, 25))
 
 ggplot(crowns) +
   geom_freqpoly(
@@ -201,109 +209,42 @@ ggplot(crowns) +
   ) +
   scale_color_viridis_d() +
   facet_wrap(vars(land_use_at_max_z)) +
-  coord_cartesian(xlim = c(0, 30))
+  coord_cartesian(xlim = c(0, 25))
 
-crowns %>%
-  filter(diameter_convex_mean > 3) %>%
-ggplot() +
+ggplot(crowns) +
   geom_density(aes(x = num_points / num_pulses, color = cd2th_x_ch2th)) +
   scale_color_viridis_d() +
   facet_wrap(vars(land_use_at_max_z)) +
   coord_cartesian(xlim = c(1, 1.03))
 
-
-# Trees with < 10 m2 area
+# Pulse density per tree
 crowns %>%
-  filter(area_convex < 50) %>%
-  group_by(cd_2_th, ch_2_th) %>%
-  slice_sample(n = 1e4) %>%
+  mutate(pulse_density = num_pulses / area_convex) %>%
+  filter(pulse_density < 20) %>%
 ggplot() +
-  geom_point(aes(x = area_convex, y = num_pulses), size = 0.2)
+  geom_density(aes(x = pulse_density, color = ch2th_x_cd2th)) +
+  scale_color_viridis_d() +
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim = c(0, 7))
 
+# Point density per tree
 crowns %>%
-  group_by(cd_2_th, ch_2_th) %>%
-  slice_sample(n = 1e4) %>%
+  mutate(point_density = num_points / area_convex) %>%
+  filter(point_density < 20) %>%
 ggplot() +
-  geom_histogram(aes(area_convex), binwidth = 0.25) +
-  coord_cartesian(xlim = c(0, 50))
+  geom_density(aes(x = point_density, color = ch2th_x_cd2th)) +
+  scale_color_viridis_d() +
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim = c(0, 7))
 
-ggplot() +
-  geom_line(aes(x = segmentation_params, y = n),
-    data = crowns %>%
-      filter(area_convex < 10) %>%
-      count(segmentation_params),
-    color = "red"
-  ) +
-  geom_line(aes(x = segmentation_params, y = n),
-    data = crowns %>% count(segmentation_params),
-    color = "blue",
-  )
-
+# Ground point density
 crowns %>%
-  filter(area_convex < 30) %>%
-  group_by(segmentation_params) %>%
-  slice_sample(n = 1e4) %>%
+  filter(ground_point_density_mean < 1.5) %>%
 ggplot() +
-  geom_point(aes(x = area_convex, y = max_z), size = 0.1)
-
-segmented_points <- lidR::readLAS(
-    "../../Data/output/segmentation/cd2th_0_5_ch2th_1/"
-  )
-
-crown_hulls <- sf::read_sf(
-  "../../Data/output/segmentation/cd2th_0_5_ch2th_0_5/crown_hulls_with_data.gpkg"
-)
-
-segmented_points@data <- crown_hulls %>%
-  sf::st_drop_geometry() %>%
-  select(c(crown_id, diameter_convex_mean)) %>%
-  data.table::as.data.table() %>%
-  .[segmented_points@data, on = "crown_id"] %>%
-  mutate(diameter_convex_mean_log = log(diameter_convex_mean))
-
-segmented_points %>%
-  lidR_clip_relative_rectangle(width = 6000, height = 6000, x_left = 2000) %>%
-  lidR::unnormalize_height() %>%
-  lidR::plot(color = "diameter_convex_mean", axis = TRUE, legend = TRUE)
-
-
-crowns %>%
-  filter(between(max_z, 5, 40)) %>%
-ggplot() +
-  geom_freqpoly(
-    aes(x = max_z, color = land_use_at_max_z),
-    size = 2,
-    binwidth = 1
-  ) +
-  scale_color_manual(values = land_use_colors) +
-  facet_grid(rows = vars(ch_2_th), cols = vars(cd_2_th))
-
-ggplot(crowns) +
-  geom_freqpoly(
-    aes(x = ground_point_density_mean, color = land_use_at_max_z),
-    size = 2,
-    binwidth = 0.05
-  ) +
-  scale_color_manual(values = land_use_colors) +
-  coord_cartesian(xlim = c(0, 1.5))
-
-ggplot(crowns) +
-  geom_histogram(aes(x = sqrt(area_convex)), binwidth = 0.1) +
-  geom_vline(xintercept = 1, color = "red")
-
-crowns %>%
-  filter(area_convex > 1) %>%
-  group_by(land_use_at_max_z) %>%
-  slice_sample(n = 1e4) %>%
-ggplot() +
-  geom_point(
-    aes(
-      x = ground_point_density_mean,
-      y = terrain_height_range,
-      color = land_use_at_max_z
-    ),
-    size = 0.5
-  )
+  geom_freqpoly(aes(x = ground_point_density_mean, color = land_use_at_max_z), binwidth = 0.05) +
+  coord_cartesian(xlim = c(0, 1))
+# -> I'm not yet satisfied with this plot but it reflects the distribution of
+# ground points quite nicely.
 
 
 # Terrain Height Range -> Mean Slope ----
@@ -311,7 +252,7 @@ ggplot() +
 # So the terrain height range is likely to be smaller when the tree is smaller.
 # Therefore it has to be shown in combination with e.g. the crown diameter.
 # Instead of simply using the ratio of height range and diameter, I chose to
-# calculat an inclination from them.
+# calculate an inclination from them.
 
 ggplot(crowns) +
   geom_density(aes(
@@ -340,9 +281,7 @@ ggplot() +
   facet_wrap(vars(land_use_at_max_z))
 
 # I guess it makes more sense then to use the mean slope instead
-crowns %>%
-  # filter(diameter_convex_max > 3) %>%
-ggplot() +
+ggplot(crowns) +
   geom_density(aes(x = slope_mean, color = ch2th_x_cd2th)) +
   scale_x_continuous(breaks = c(0, 30, 60, 90)) +
   scale_color_viridis_d() +
@@ -358,27 +297,22 @@ ggplot() +
   facet_wrap(vars(land_use_at_max_z))
 
 
-
 # Trees > 30m ----
 
 crowns %>%
-  filter(max_z > 30) %>%
+  filter(max_z > 29) %>%
 ggplot() +
   geom_point(
     aes(x = max_z, y = slope_mean, color = cd2th_x_ch2th),
     size = 0.5
   ) +
   scale_color_viridis_d() +
-  facet_wrap(vars(land_use_at_max_z))
-# -> Terrain Height ranges above 50 look like outlier candidates
+  facet_wrap(vars(land_use_at_max_z)) +
+  coord_cartesian(xlim = c(30, max(crowns$max_z)))
+# -> Slopes above 55 look like outlier candidates
 
 
-# Pulse and Point Counts
-ggplot(crowns) +
-  geom_point(aes(x = area_convex, y = num_points / num_pulses), size = 0.1)
-
-
-# CD / H ratio
+# CD / H ratio ----
 ggplot(crowns) +
   geom_freqpoly(
     aes(x = diameter_convex_mean / max_z, color = land_use_at_max_z),
@@ -389,15 +323,6 @@ ggplot(crowns) +
   coord_cartesian(xlim = c(0, 1))
 
 crowns %>%
-  group_by(cd_2_th, ch_2_th) %>%
-  slice_sample(n = 1e4) %>%
-ggplot() +
-  geom_point(
-    aes(x = diameter_convex_mean, y = max_z, color = area_convex >= 10),
-    size = 0.2
-  )
-
-crowns %>%
   filter(diameter_convex_mean / max_z > 1) %>%
 ggplot() +
   # geom_point(aes(x = max_z, y = diameter_convex_mean / max_z), size = 0.2)
@@ -406,6 +331,7 @@ ggplot() +
   #   aes(x = diameter_convex_mean, y = diameter_convex_mean / max_z),
   #   size = 0.2
   # )
+# -> It's not much but I think we can use this as an outlier threshold
 
 
 # Crown Lengthiness
@@ -462,7 +388,7 @@ ggplot() +
     y = percent_change
   )) +
   guides(x = guide_axis(n.dodge = 2))
-# -> Change in number of detected trees is mostly between 2 to 10 percent less
+# -> Change in number of detected trees is somewhere around 2 to 10 percent less
 # trees in v3
 
 ggplot(crowns) +
