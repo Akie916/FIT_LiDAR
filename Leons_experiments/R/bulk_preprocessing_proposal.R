@@ -236,17 +236,17 @@ edge_clipped_points <- lidR::readLAS(glue(
   edge_clipped_points_name, ".laz"
 ))
 
-terrain_height_grid <- raster::raster(
-  glue("{catalog_output_directory}{terrain_height_grid_name}")
-)
 ground_point_density <- raster::raster(
-  glue("{catalog_output_directory}{ground_point_density_grid_name}")
+  glue(catalog_output_directory, ground_point_density_grid_name)
 )
 land_use_grid <- raster::raster(land_use_grid_path)
 
 # This took about a minute on my machine
-slope_and_aspect_grid <- raster::terrain(
-  raster::aggregate(terrain_height_grid, fact = 4),
+slope_and_aspect_grid <- raster::raster(
+  glue(catalog_output_directory, terrain_height_grid_name)
+) %>%
+  raster::aggregate(., fact = 4) %>%
+  raster::terrain(.,
   opt = c("slope", "aspect"),
   unit = "degrees",
   neighbors = 8
@@ -343,6 +343,21 @@ segmented_points_with_data <- lidR::readLAScatalog(
   chunk_size = 2000
 )
 
+# The min and max functions would otherwise return -Inf or Inf respectively if
+# all values in x were NA and removed because of na.rm = TRUE.
+# There are still warnings about that when running calculate_tree_metrics, but I
+# checked the output and couldn't find any Inf or -Inf so it should be fine.
+min_of_nas_is_na <- function(x) {
+  suppressWarnings(
+    dplyr::if_else(all(is.na(x)), true = NA_real_, false = min(x, na.rm = TRUE))
+  )
+}
+max_of_nas_is_na <- function(x) {
+  suppressWarnings(
+    dplyr::if_else(all(is.na(x)), true = NA_real_, false = max(x, na.rm = TRUE))
+  )
+}
+
 calculate_tree_metrics <- function(x, y, z,
                                    gpstime,
                                    terrain_height,
@@ -389,17 +404,19 @@ calculate_tree_metrics <- function(x, y, z,
     terrain_height_range = max(terrain_height) - min(terrain_height),
 
     slope_at_max_z = slope[max_z_index],
-    slope_max = max(slope),
-    slope_median = median(slope),
-    slope_mean = mean(slope),
-    slope_min = min(slope),
-    slope_range = max(slope) - min(slope),
+    slope_max = max_of_nas_is_na(slope),
+    slope_median = median(slope, na.rm = TRUE),
+    slope_mean = mean(slope, na.rm = TRUE),
+    slope_min = min_of_nas_is_na(slope),
+    slope_range = max_of_nas_is_na(slope) - min_of_nas_is_na(slope),
+    slope_na_count = sum(is.na(slope)),
 
     aspect_at_max_z = aspect[max_z_index],
-    aspect_max = max(aspect),
-    aspect_median = median(aspect),
-    aspect_mean = mean(aspect),
-    aspect_min = min(aspect),
+    aspect_max = max_of_nas_is_na(aspect),
+    aspect_median = median(aspect, na.rm = TRUE),
+    aspect_mean = mean(aspect, na.rm = TRUE),
+    aspect_min = min_of_nas_is_na(aspect),
+    aspect_na_count = sum(is.na(aspect)),
 
     ground_point_density_at_max_z = ground_point_density[max_z_index],
     ground_point_density_max = max(ground_point_density),
@@ -694,7 +711,7 @@ sf::write_sf(convex_crown_hulls,
 convex_crown_hulls %>%
   select(-(XTOP:ZTOP)) %>%
   left_join(
-    tree_metrics_points %>% as_tibble() %>% select(-geom),
+    tree_metrics_points %>% sf::st_drop_geometry(.),
     by = "crown_id"
   ) %>%
   sf::write_sf(
