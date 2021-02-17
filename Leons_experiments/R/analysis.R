@@ -6,7 +6,7 @@ library(tidyverse)
 file_paths <- list.files(
   paste0(
     "../../Data/output/segmentation/",
-    "crown_hulls_with_data_v3_homogenize_before_removing_normalization_effects"
+    "crown_hulls_with_data_v3_1_deal_with_na_terrain_values"
   ),
   full.names = TRUE
 )
@@ -56,24 +56,22 @@ crowns <- bind_rows(crowns) %>%
     ),
     cd_2_th = factor(cd_2_th),
     ch_2_th = factor(ch_2_th),
-    cd2th_x_ch2th = fct_cross(cd_2_th, ch_2_th),
-    ch2th_x_cd2th = fct_cross(ch_2_th, cd_2_th)
+    cd2th_x_ch2th = fct_cross(cd_2_th, ch_2_th, sep = " | ") %>%
+      fct_relevel(levels(.) %>% sort()),
+    ch2th_x_cd2th = fct_cross(ch_2_th, cd_2_th, sep = " | ") %>%
+      fct_relevel(levels(.) %>% sort())
   )
 
-readr::write_rds(crowns,
-  paste0(
-    "../../Data/output/crown_hulls_with_data_v3_",
-    "homogenize_before_removing_normalization_effects.rds"
-  )
+write_rds(crowns,
+  "../../Data/output/crown_hulls_with_data_v3_1_deal_with_na_terrain_values.rds"
 )
 
 
 # Load Data ---------------------------------------------------------------
 
-crowns <- readr::read_rds(paste0(
-  "../../Data/output/crown_hulls_with_data_v3_",
-  "homogenize_before_removing_normalization_effects.rds"
-)) %>%
+crowns <- read_rds(
+  "../../Data/output/crown_hulls_with_data_v3_1_deal_with_na_terrain_values.rds"
+) %>%
   mutate(across(c(cd2th_x_ch2th, ch2th_x_cd2th),
     ~fct_relabel(.x, ~str_replace(., pattern = ":", replacement = " | "))
   ))
@@ -110,7 +108,7 @@ land_use_areas <- tibble(land_use = raster::values(
   mutate(area_hectare = area_m2 / 1e4)
 
 
-# Ggplot Theme Settings ---------------------------------------------------
+# ggplot Theme Settings ---------------------------------------------------
 
 # Increase the default text size for all ggplots (the ggplot_default_theme
 # variable is assigned the unmodified theme)
@@ -119,16 +117,23 @@ ggplot_default_theme <- theme_update(text = element_text(size = 16))
 
 # Analysis ----------------------------------------------------------------
 
-# Sort the land use factor by the number of observations for each land use
-# TODO Agree on outlier thresholds/criteria and apply them here
+# Define outliers
+crowns_w_outliers <- crowns %>%
+  mutate(
+    outlier =
+      !(max_z %>% between(2, 60)) |
+      !((diameter_convex_mean / max_z) %>% between(0.05, 1.5)) |
+      area_convex < 2 |
+      diameter_convex_mean < sqrt(2) * 4 / pi
+  )
+
+crowns <- crowns_w_outliers %>% filter(!outlier)
+
 crowns <- crowns %>%
   add_count(land_use_at_max_z, name = "land_use_n") %>%
   mutate(
     land_use_at_max_z = fct_reorder(land_use_at_max_z, land_use_n, .desc = TRUE)
   )
-
-# TODO make sure to not filter simply for the sake of zooming into a plot. Use
-# coord_cartesion(xlim(...), ylim(...)) instead.
 
 # Tree density ----
 crowns %>%
@@ -137,7 +142,7 @@ crowns %>%
     max_z < 50,
     diameter_convex_mean / max_z < 1.5
   ) %>%
-  group_by(ch2th_x_cd2th, land_use_at_max_z) %>%
+  group_by(cd2th_x_ch2th, land_use_at_max_z) %>%
   count() %>%
   left_join(land_use_areas, by = c(land_use_at_max_z = "land_use")) %>%
   mutate(n_per_hectare = n / area_hectare) %>%
@@ -146,12 +151,12 @@ ggplot() +
     aes(
       x = fct_reorder(land_use_at_max_z, n_per_hectare),
       y = n_per_hectare,
-      color = ch2th_x_cd2th
+      color = cd2th_x_ch2th
     ),
     size = 1.5,
     width = 0.15
   ) +
-  scale_color_viridis_d(name = "CH | CD / TH") +
+  scale_color_viridis_d(name = "CD | CH / TH") +
   theme(text = element_text(size = 16)) +
   guides(x = guide_axis(n.dodge = 2)) +
   xlab("Land Use") + ylab("# Trees / Hectare")
@@ -217,7 +222,7 @@ ggplot(crowns) +
   facet_wrap(vars(land_use_at_max_z)) +
   coord_cartesian(xlim = c(1, 1.03))
 
-# Pulse density per tree
+# Pulse density per tree area
 crowns %>%
   mutate(pulse_density = num_pulses / area_convex) %>%
   filter(pulse_density < 20) %>%
@@ -227,21 +232,24 @@ ggplot() +
   facet_wrap(vars(land_use_at_max_z)) +
   coord_cartesian(xlim = c(0, 7))
 
-# Point density per tree
+# Point density per tree volume
 crowns %>%
-  mutate(point_density = num_points / area_convex) %>%
+  mutate(point_density = num_points / (area_convex * max_z)) %>%
   filter(point_density < 20) %>%
 ggplot() +
   geom_density(aes(x = point_density, color = ch2th_x_cd2th)) +
   scale_color_viridis_d() +
   facet_wrap(vars(land_use_at_max_z)) +
-  coord_cartesian(xlim = c(0, 7))
+  coord_cartesian(xlim = c(0, 0.7))
 
 # Ground point density
 crowns %>%
   filter(ground_point_density_mean < 1.5) %>%
 ggplot() +
-  geom_freqpoly(aes(x = ground_point_density_mean, color = land_use_at_max_z), binwidth = 0.05) +
+  geom_freqpoly(
+    aes(x = ground_point_density_mean, color = land_use_at_max_z),
+    binwidth = 0.05
+  ) +
   coord_cartesian(xlim = c(0, 1))
 # -> I'm not yet satisfied with this plot but it reflects the distribution of
 # ground points quite nicely.
@@ -323,16 +331,14 @@ ggplot(crowns) +
   coord_cartesian(xlim = c(0, 1))
 
 crowns %>%
-  filter(diameter_convex_mean / max_z > 1) %>%
+  filter(diameter_convex_mean / max_z > 1.5) %>%
 ggplot() +
-  # geom_point(aes(x = max_z, y = diameter_convex_mean / max_z), size = 0.2)
   geom_point(aes(x = area_convex, y = diameter_convex_mean / max_z), size = 0.2)
   # geom_point(
   #   aes(x = diameter_convex_mean, y = diameter_convex_mean / max_z),
   #   size = 0.2
   # )
-# -> It's not much but I think we can use this as an outlier threshold
-
+# -> It's not nany trees but I think we can use this as an outlier threshold
 
 # Crown Lengthiness
 circles <- tibble(
@@ -356,6 +362,19 @@ ggplot() +
   # scale_x_log10() + scale_y_log10() +
   facet_grid(rows = vars(ch_2_th), cols = vars(cd_2_th))
 # -> Have I already filtered for crown lengthiness?
+
+
+# Sandbox ----
+
+crowns %>%
+  filter(area_convex < pi * (sqrt(2) / 2)^2) %>%
+ggplot() +
+  geom_density(aes(x = diameter_convex_mean), size = 0.2) +
+  geom_vline(xintercept = sqrt(2), color = "red") +
+  facet_wrap(vars(land_use_at_max_z))
+# -> The diameters excluded by this area size filter are actually a bit bigger
+# than sqrt(2) but since these are very small diameters anyway it doesn't
+# really matter
 
 
 # Temporary: Compare crowns_v2 with crowns_v3 -----------------------------
