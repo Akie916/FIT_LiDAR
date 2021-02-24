@@ -1,8 +1,12 @@
+
+# Load Packages -----------------------------------------------------------
+
 library(tidyverse)
 
 
 # Combine the crown polygon datasets into one (without polygons) ----------
 
+# Get the file names of the polygon data sets
 file_paths <- list.files(
   paste0(
     "../../Data/output/segmentation/",
@@ -11,8 +15,10 @@ file_paths <- list.files(
   full.names = TRUE
 )
 
+# Create an empty list that will be filled in the loop below
 crowns <- list()
 
+# Loop over the polygon files
 # This takes a few minutes on my machine
 for (i in seq_along(file_paths)) {
 
@@ -29,19 +35,32 @@ for (i in seq_along(file_paths)) {
     ))
 
   # Add the data to the list
-  crowns[[i]] <- sf::read_sf(file_paths[[i]]) %>%
-    sf::st_drop_geometry() %>%
-    mutate(
+  crowns[[i]] <- sf::read_sf(file_paths[[i]]) %>% # read the data
+    sf::st_drop_geometry(.) %>% # remove the polygons
+    mutate( # add the segmentation parameters as additional columns
       cd_2_th = segmentation_parameters %>% pull(cd_2_th),
       ch_2_th = segmentation_parameters %>% pull(ch_2_th)
     )
 
-  # Indicata progress
+  # Indicate progress with a message to the console
   cat("Processed file ", i, "\n")
 }
 
-crowns <- bind_rows(crowns) %>%
+# Combine the data.frames in the list into one big data.frame and store it in an
+# R data file
+bind_rows(crowns) %>%
+  write_rds(
+    "../../Data/output/crown_hulls_with_data_v3_1_deal_with_na_terrain_values.rds"
+  )
+
+
+# Load Data ---------------------------------------------------------------
+
+crowns <- read_rds( # read the previously written data file
+  "../../Data/output/crown_hulls_with_data_v3_1_deal_with_na_terrain_values.rds"
+) %>%
   mutate(
+    # translate the land use numbers into descriptions
     land_use_at_max_z = factor(land_use_at_max_z) %>% fct_recode(
       `Bare rocks` = "1",
       `Broad-leaved forest` = "2",
@@ -54,28 +73,20 @@ crowns <- bind_rows(crowns) %>%
       `Sparsely vegetated areas (crater)` = "9",
       `Transitional woodland-shrub` = "10"
     ),
+    # convert the numeric segmentation parameters into factors
     cd_2_th = factor(cd_2_th),
     ch_2_th = factor(ch_2_th),
+    # create combination factors for the segmentation parameters and sort the
+    # factor levels alphabetically so that they are meaningfully ordered in plot
+    # legends
     cd2th_x_ch2th = fct_cross(cd_2_th, ch_2_th, sep = " | ") %>%
-      fct_relevel(levels(.) %>% sort()),
+      fct_relevel(levels(.) %>% sort()), # this sorts the factor levels
     ch2th_x_cd2th = fct_cross(ch_2_th, cd_2_th, sep = " | ") %>%
       fct_relevel(levels(.) %>% sort())
   )
 
-write_rds(crowns,
-  "../../Data/output/crown_hulls_with_data_v3_1_deal_with_na_terrain_values.rds"
-)
-
-
-# Load Data ---------------------------------------------------------------
-
-crowns <- read_rds(
-  "../../Data/output/crown_hulls_with_data_v3_1_deal_with_na_terrain_values.rds"
-) %>%
-  mutate(across(c(cd2th_x_ch2th, ch2th_x_cd2th),
-    ~fct_relabel(.x, ~str_replace(., pattern = ":", replacement = " | "))
-  ))
-
+# Set up some colors for plotting the different land use classes (I don't really
+# use them though)
 land_use_colors <- c(
   "azure3", # Bare rocks
   "limegreen", # Broad-leaved forest
@@ -89,23 +100,46 @@ land_use_colors <- c(
   "yellowgreen"
 )
 
-land_use_areas <- tibble(land_use = raster::values(
-  raster::raster("../../Data/land_use/Akies_LU_grid.tif")
-)) %>%
-  mutate(land_use = factor(land_use) %>% fct_recode(
-    `Bare rocks` = "1",
-    `Broad-leaved forest` = "2",
-    `Coniferous forest (sparse)` = "3",
-    `Coniferous forest (crater)` = "4",
-    `Coniferous forest (dense)` = "5",
-    `Moors and heathland` = "6",
-    `Sclerophyllous vegetation` = "7",
-    `Sparsely vegetated areas` = "8",
-    `Sparsely vegetated areas (crater)` = "9",
-    `Transitional woodland-shrub` = "10"
-  )) %>%
+# Get the area of each land use class for later analysis
+land_use_areas <- tibble(
+  # load the raster, extract its values and put them into a tidyverse data.frame
+  land_use = raster::raster("../../Data/land_use/Akies_LU_grid.tif") %>%
+    raster::values()
+  ) %>%
+  mutate(
+    # translate the land use numbers into descriptions
+    land_use = factor(land_use) %>% fct_recode(
+      `Bare rocks` = "1",
+      `Broad-leaved forest` = "2",
+      `Coniferous forest (sparse)` = "3",
+      `Coniferous forest (crater)` = "4",
+      `Coniferous forest (dense)` = "5",
+      `Moors and heathland` = "6",
+      `Sclerophyllous vegetation` = "7",
+      `Sparsely vegetated areas` = "8",
+      `Sparsely vegetated areas (crater)` = "9",
+      `Transitional woodland-shrub` = "10"
+    )
+  ) %>%
+  # Calculate the areas by counting the values because each value corresponds to
+  # a 1m^2 pixel
   count(land_use, name = "area_m2") %>%
+  # also calculate hectare values from the m^2 values
   mutate(area_hectare = area_m2 / 1e4)
+
+# Fetch an allometry database that will be used for outlier definitions
+allometry_db <- readxl::read_excel( # read the relevant part of the excel file
+  paste0("../../../Master_Thesis/Data/Jucker2016_GlobalAllometricDatabase/",
+         "Jucker2016_GlobalAllometricDatabase.xlsx"),
+  sheet = "Data",
+  na = "NA",
+  col_types = c(rep("guess", 2), "numeric", rep("guess", 6))
+) %>%
+  mutate(across(Functional_type:Biome, factor)) %>%
+  filter( # select only trees from the same kind of region as La Palma
+    Biogeographic_zone == "Palearctic",
+    Biome == "Woodlands and savannas"
+  )
 
 
 # ggplot Theme Settings ---------------------------------------------------
@@ -115,25 +149,207 @@ land_use_areas <- tibble(land_use = raster::values(
 ggplot_default_theme <- theme_update(text = element_text(size = 16))
 
 
-# Analysis ----------------------------------------------------------------
+# > Overview over Raw Results ---------------------------------------------
 
-# Define outliers
+# Plot the number of trees per land use and parameter combination ----
+crowns %>%
+  # count the number of cases for each combination of land use and segmentation
+  # parameters
+  count(land_use_at_max_z, cd2th_x_ch2th) %>%
+  # Sort the land use class factor by the count for a sorted visualization
+  mutate(land_use_at_max_z = fct_reorder(land_use_at_max_z, n)) %>%
+ggplot() +
+  # use geom_jitter instead of geom_point so that the individual points in the
+  # plot don't overlap
+  geom_jitter(
+    aes(x = land_use_at_max_z, y = n, color = cd2th_x_ch2th),
+    size = 1.5,
+    width = 0.15 # restrict the "jittering" of the points to a certain width
+  ) +
+  # use viridis colors for the segmentation parameters
+  scale_color_viridis_d(name = "Segmentation\nParameters\n(CD | CH / TH)") +
+  # tilt the land use class descriptions, otherwise they would overlap
+  guides(x = guide_axis(title = NULL, angle = 45)) +
+  ylab("Num. Segmented Objects")
+ggsave("../Leons_experiments/graphics/segmentation_unfiltered_count.pdf",
+  width = 9, height = 9 / 1.618 # use the golden ratio
+)
+
+
+# > Outlier Definition ----------------------------------------------------
+
+# Identify Value Ranges of Allometric Database ----
+allometry_plot <- cowplot::plot_grid(
+  ggplot(allometry_db) +
+    geom_point(aes(x = CD / H, y = H), size = 0.8),
+  ggplot(allometry_db) +
+    geom_point(aes(x = CD, y = H), size = 0.8),
+  ncol = 2
+)
+cowplot::save_plot("graphics/allometry_CD_n_CD2H.pdf", allometry_plot, ncol = 2)
+
+allometry_db %>%
+  select(CD) %>%
+  # arrange(CD) %>%
+  arrange(desc(CD)) %>%
+  unique()
+
+allometry_db %>%
+  transmute(CD2H = CD / H) %>%
+  # arrange(CD2H) %>%
+  arrange(desc(CD2H)) %>%
+  unique()
+
+# Check out tree height distribution to find possible outlier definition ----
+crowns %>%
+  add_count(land_use_at_max_z, name = "land_use_n") %>%
+  mutate(land_use_at_max_z = fct_reorder(land_use_at_max_z, land_use_n)) %>%
+  group_by(land_use_at_max_z, cd2th_x_ch2th) %>%
+  # calculate different tree height percentile values for every combination of
+  # land use and segmentation parameters
+  summarize(
+    percentile = c(0, 0.001, 0.01, 0.05, 0.1, 0.2),
+    tree_height = quantile(max_z, probs = percentile),
+    percentile = factor(percentile * 100)
+  ) %>%
+ggplot() +
+  geom_jitter(
+    aes(x = land_use_at_max_z, y = tree_height, color = cd2th_x_ch2th),
+    size = 1.5,
+    width = 0.15
+  ) +
+  scale_color_viridis_d(name = "Segmentation\nParameters\n(CD | CH / TH)") +
+  # create an individual plot for each percentile
+  facet_wrap(~percentile,
+    # add a percent symbol "%" to every subplot title
+    labeller = labeller(percentile = function(labels) paste(labels, "%"))
+  ) +
+  guides(x = guide_axis(title = NULL, angle = 45)) +
+  ylab("Tree Height at Percentile") +
+  # add a margin on the left so that the tilted land use descriptions fit into
+  # the plot
+  theme(plot.margin = margin(l = 40))
+ggsave("../Leons_experiments/graphics/tree_height_lower_percentiles.pdf",
+  width = 13, height = 13 / 1.618
+)
+
+# Same thing as above for some upper percentiles
+crowns %>%
+  add_count(land_use_at_max_z, name = "land_use_n") %>%
+  mutate(land_use_at_max_z = fct_reorder(land_use_at_max_z, land_use_n)) %>%
+  group_by(land_use_at_max_z, cd2th_x_ch2th) %>%
+  summarize(
+    percentile = c(0.8, 0.9, 0.95, 0.99, 0.999, 1),
+    tree_height = quantile(max_z, probs = percentile),
+    percentile = factor(percentile * 100)
+  ) %>%
+  ggplot() +
+    geom_jitter(
+      aes(x = land_use_at_max_z, y = tree_height, color = cd2th_x_ch2th),
+      size = 1.5,
+      width = 0.15
+    ) +
+    scale_color_viridis_d(name = "Segmentation\nParameters\n(CD | CH / TH)") +
+    facet_wrap(~percentile,
+      labeller = labeller(percentile = function(labels) paste(labels, "%"))
+    ) +
+    guides(x = guide_axis(title = NULL, angle = 45)) +
+    ylab("Tree Height at Percentile") +
+    theme(plot.margin = margin(l = 40))
+ggsave("../Leons_experiments/graphics/tree_height_upper_percentiles.pdf",
+  width = 13, height = 13 / 1.618
+)
+
+# Define outliers ----
 crowns_w_outliers <- crowns %>%
   mutate(
-    outlier =
-      !(max_z %>% between(2, 60)) |
-      !((diameter_convex_mean / max_z) %>% between(0.05, 1.5)) |
-      area_convex < 2 |
-      diameter_convex_mean < sqrt(2) * 4 / pi
+    # don't register outliers where the slope is NA by setting all NA slope
+    # values to 0 (but just here, for the outlier definition)
+    slope_wo_na = if_else(slope_mean %>% is.na(), 0, slope_mean),
+    # determine all outliers
+    outlier = !(
+      max_z %>% between(6, 40) &
+      diameter_convex_mean %>% between(5, 17) &
+      slope_wo_na <= 75 &
+      diameter_convex_mean / max_z %>% between(0.039, 1.26)
+    ),
+    # determine outliers for individual criteria
+    outlier_bad_height = !(max_z %>% between(6, 40)),
+    outlier_bad_diameter = !(diameter_convex_mean %>% between(5, 17)),
+    outlier_bad_cd_2_h = !(diameter_convex_mean / max_z %>% between(0.039, 1.26)),
+    outlier_too_small = max_z < 6,
+    outlier_too_tall = max_z > 40,
+    outlier_too_thin = diameter_convex_mean < 5,
+    outlier_too_wide = diameter_convex_mean > 17,
+    outlier_too_steep = slope_wo_na > 75,
+    outlier_too_thin_for_height = diameter_convex_mean / max_z < 0.039,
+    outlier_too_wide_for_height = diameter_convex_mean / max_z > 1.26,
+    # remove the slope values where NAs where converted to zeros
+    slope_wo_na = NULL
   )
 
-crowns <- crowns_w_outliers %>% filter(!outlier)
+# Analyse outliers ----
+crowns_w_outliers %>%
+  # count the number of cases for each land use and segmentation parameter
+  # combination
+  count(land_use_at_max_z, cd2th_x_ch2th, name = "n_total") %>%
+  # count the number of outliers for each combination separately and add them to
+  # the total counts with a join
+  left_join(
+    crowns_w_outliers %>%
+      filter(outlier) %>%
+      count(land_use_at_max_z, cd2th_x_ch2th, name = "n_outlier"),
+    by = c("land_use_at_max_z", "cd2th_x_ch2th")
+  ) %>%
+  mutate(
+    outlier_share_percent = n_outlier / n_total * 100,
+    land_use = fct_reorder(land_use_at_max_z, n_total)
+  ) %>%
+ggplot() +
+  geom_jitter(
+    aes(x = land_use, y = outlier_share_percent, color = cd2th_x_ch2th),
+    size = 1.5,
+    width = 0.15
+  ) +
+  scale_color_viridis_d(name = "Segmentation\nParameters\n(CD | CH / TH)") +
+  guides(x = guide_axis(title = NULL, angle = 30)) +
+  ylab("Outlier Share [%]") +
+  theme(plot.margin = margin(l = 40))
+ggsave("../Leons_experiments/graphics/outlier_share.pdf",
+  width = 13, height = 13 / 1.618
+)
 
-crowns <- crowns %>%
+# Counts and percentages of different outliers
+crowns_w_outliers %>%
+  group_by(cd2th_x_ch2th, land_use_at_max_z) %>%
+  summarize(
+    n = n(),
+    # the sums of the TRUE/FALSE outlier values give the number of TRUE values
+    percent_cd_outlier = sum(outlier_bad_diameter) / n * 100,
+    percent_h_outlier = sum(outlier_bad_height) / n * 100,
+    n_cd_2_h_outlier = sum(outlier_bad_cd_2_h),
+    percent_slope_outlier = sum(outlier_too_steep) / n * 100,
+  ) %>%
+  arrange(desc(n), .by_group = TRUE) %>%
+  print(n = nrow(.))
+
+# Overlap between different outliers (unfinished)
+# crowns_w_outliers %>%
+#   filter(cd_2_th == "0.4" & ch_2_th == "0.5") %>%
+#   select(c(crown_id, starts_with("outlier_"))) %>%
+#
+# venn_diagram <- nVennR::plotVenn()
+
+# Finally exclude outliers ----
+crowns <- crowns_w_outliers %>%
+  filter(!outlier) %>%
   add_count(land_use_at_max_z, name = "land_use_n") %>%
   mutate(
     land_use_at_max_z = fct_reorder(land_use_at_max_z, land_use_n, .desc = TRUE)
   )
+
+
+# > Analysis --------------------------------------------------------------
 
 # Tree density ----
 crowns %>%
@@ -156,10 +372,13 @@ ggplot() +
     size = 1.5,
     width = 0.15
   ) +
-  scale_color_viridis_d(name = "CD | CH / TH") +
-  theme(text = element_text(size = 16)) +
-  guides(x = guide_axis(n.dodge = 2)) +
-  xlab("Land Use") + ylab("# Trees / Hectare")
+  scale_color_viridis_d(name = "Segmentation\nParameters\n(CD | CH / TH)") +
+  guides(x = guide_axis(title = NULL, angle = 45)) +
+  ylab("Tree Density [1 / ha]") +
+  theme(plot.margin = margin(l = 40))
+ggsave("../Leons_experiments/graphics/tree_densities.pdf",
+  width = 9, height = 9 / 1.618
+)
 # -> This shows clear patterns but only because all trees with a crown area < 8
 # have been excluded. If you disable that filter the segmentation parameters are
 # not as clearly separated.
@@ -182,7 +401,7 @@ crowns %>%
       mutate(index = seq_len(nrow(.x)))
   ) %>%
 ggplot() +
-  geom_line(aes(x = index, y = max_z, color = ch2th_x_cd2th)) +
+  geom_line(aes(x = index, y = max_z, color = cd2th_x_ch2th)) +
   scale_color_viridis_d() +
   facet_wrap(vars(land_use_at_max_z)) +
   scale_x_log10() +
